@@ -1,0 +1,14 @@
+# secrets
+.env
+
+# raw kakao exports (sensitive)
+*.txt
+
+# training artifacts (large + sensitive-derived)
+data/
+checkpoints/
+runs/
+logs/
+*.pt
+*.bin
+*.jsonl

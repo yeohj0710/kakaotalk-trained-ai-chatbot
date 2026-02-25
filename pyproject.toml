@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kakaotalk-room-bot"
+version = "0.1.0"
+description = "Train a KakaoTalk room style chatbot from raw exported chat logs."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "torch",
+  "tqdm>=4.66",
+  "pyautogui>=0.9.54",
+  "pyperclip>=1.8.2",
+  "pygetwindow>=0.0.9",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
