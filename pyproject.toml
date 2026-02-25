@@ -12,10 +12,15 @@ dependencies = [
   "numpy>=1.26",
   "torch",
   "tqdm>=4.66",
+  "PyYAML>=6.0",
   "pyautogui>=0.9.54",
   "pyperclip>=1.8.2",
   "pygetwindow>=0.0.9",
+  "cryptography>=44.0",
 ]
+
+[project.scripts]
+chatbot-ops = "chatbot.ops:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

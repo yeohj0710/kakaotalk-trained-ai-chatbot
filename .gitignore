@@ -1,14 +1,48 @@
-# secrets
+# Secrets
 .env
 
-# raw kakao exports (sensitive)
-*.txt
+# Root-level text files are treated as sensitive by default.
+# Keep only explicit allowlist text files tracked.
+/*.txt
+!/requirements.txt
+!/PORTABLE_STATE.txt
 
-# training artifacts (large + sensitive-derived)
-data/
+# Raw chat exports and derived data (sensitive)
+data/raw/inbox/
+data/raw/organized/
+data/raw/manifest.json
+data/processed/
+
+# Training outputs
 checkpoints/
 runs/
 logs/
 *.pt
 *.bin
 *.jsonl
+
+# Package/build/cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Artifacts policy: keep only explicit latest artifact files trackable.
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/model_latest.pt
+!artifacts/model_latest.enc
+!artifacts/model_info.json
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

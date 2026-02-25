@@ -1,0 +1,93 @@
+PORTABLE_STATE.txt
+Single Source of Truth for moving/resuming this project on another machine.
+
+[1] Required Environment
+- OS: Windows + PowerShell (primary supported flow)
+- Python: 3.10+ (tested on 3.14)
+- NVIDIA GPU recommended for training
+
+[2] Required Files/Folders to copy for continuation
+- configs/
+  - configs/paths.yaml
+  - configs/train.yaml
+  - configs/gen.yaml
+- Source code
+  - src/
+  - scripts/
+  - pyproject.toml
+  - requirements.txt
+- Runtime state
+  - checkpoints/<run_name>/latest.pt        (required to resume)
+  - checkpoints/<run_name>/best.pt          (recommended)
+  - checkpoints/<run_name>/logs/            (recommended)
+  - data/processed/tokenizer.json           (recommended if old checkpoints lack embedded tokenizer_state)
+  - data/processed/train.bin + val.bin      (required for continued training)
+- Optional published artifact
+  - artifacts/model_latest.pt OR artifacts/model_latest.enc
+  - artifacts/model_info.json
+
+[3] Required Secrets (.env, do not commit)
+Create .env from .env.example and set:
+- CHATBOT_PASSWORD=<required for inference/bridge gate>
+- CHATBOT_MODEL_KEY=<required only for .enc model load/publish>
+
+[4] One-line commands (PowerShell)
+- Setup/install (first time):
+  .\scripts\run.ps1 train --max_steps 1 -Bootstrap
+
+- Organize raw txt:
+  .\scripts\run.ps1 organize
+
+- Preprocess:
+  .\scripts\run.ps1 preprocess
+
+- Train / auto-resume:
+  .\scripts\run.ps1 train
+
+- Stop training gracefully:
+  Ctrl+C
+  or create file: checkpoints\<run_name>\STOP
+
+- One-shot reply:
+  .\scripts\run.ps1 reply "테스트 메시지"
+
+- Interactive chat:
+  .\scripts\run.ps1 chat
+
+- Bridge dry-run:
+  .\scripts\run.ps1 bridge --dry
+
+- Bridge send mode:
+  .\scripts\run.ps1 bridge --send
+
+- Publish latest model artifact:
+  .\scripts\publish_model.ps1
+  or encrypted:
+  .\scripts\publish_model.ps1 -Encrypt
+
+[5] Resume logic
+- `chatbot.train` auto-checks:
+  checkpoints/<run_name>/latest.pt
+- If found: resume from latest step + 1
+- If not found: new training starts in that run directory
+- If architecture/tokenizer/vocab changed: resume is blocked with explicit error
+
+[6] Config editing and override
+- Edit:
+  - configs/train.yaml (training)
+  - configs/gen.yaml (inference/chat/bridge)
+  - configs/paths.yaml (paths/publish)
+- Optional env override format:
+  CHATBOT_CFG__train__optimization__learning_rate=0.0002
+  CHATBOT_CFG__gen__sampling__temperature=0.7
+
+[7] Important limitation notes
+- Real security is limited: code changes can bypass local checks.
+- `.enc` encryption protects model file at rest but does not prevent runtime extraction.
+- For strict operational security, control machine access and repository permissions.
+
+[8] Quick health checks
+- python -m compileall src
+- python -m chatbot.ops organize --dry
+- python -m chatbot.ops train --max_steps 20
+- python -m chatbot.ops reply "헬스체크"

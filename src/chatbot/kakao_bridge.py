@@ -6,8 +6,10 @@ import time
 from collections import deque
 from datetime import datetime
 
+from .config import load_gen_config
 from .console import safe_print
 from .inference import InferenceEngine
+from .security import require_password
 
 
 EXPORT_LINE_PATTERN = re.compile(
@@ -91,34 +93,37 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "KakaoTalk bridge via desktop UI automation. "
-            "Use with caution; defaults to dry-run (no sending)."
+            "Defaults to DRY-RUN unless --send is explicitly provided."
         )
     )
-    parser.add_argument("--ckpt", required=True)
-    parser.add_argument("--bot_speaker", required=True)
-    parser.add_argument("--window_title", default="", help="KakaoTalk window title (optional).")
-    parser.add_argument("--chat_xy", required=True, help="chat-area coordinates, e.g. 500,320")
-    parser.add_argument("--input_xy", required=True, help="input-box coordinates, e.g. 520,980")
-    parser.add_argument("--poll_sec", type=float, default=2.0)
-    parser.add_argument("--max_history_turns", type=int, default=40)
-    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
-    parser.add_argument("--dtype", default="auto", choices=["auto", "fp32", "fp16", "bf16"])
-    parser.add_argument("--temperature", type=float, default=0.9)
-    parser.add_argument("--top_p", type=float, default=0.95)
-    parser.add_argument("--top_k", type=int, default=120)
-    parser.add_argument("--max_new_tokens", type=int, default=100)
-    parser.add_argument("--repetition_penalty", type=float, default=1.02)
+    parser.add_argument("--ckpt", default="")
+    parser.add_argument("--config_gen", default="configs/gen.yaml")
+    parser.add_argument("--env_path", default=".env")
+    parser.add_argument("--password", default="")
+    parser.add_argument("--run_name", default="")
+
+    parser.add_argument("--bot_speaker", default="")
+    parser.add_argument("--window_title", default="")
+    parser.add_argument("--chat_xy", default="")
+    parser.add_argument("--input_xy", default="")
+    parser.add_argument("--poll_sec", type=float, default=-1.0)
+    parser.add_argument("--max_history_turns", type=int, default=-1)
+    parser.add_argument("--device", default="", choices=["", "auto", "cpu", "cuda"])
+    parser.add_argument("--dtype", default="", choices=["", "auto", "fp32", "fp16", "bf16"])
+    parser.add_argument("--temperature", type=float, default=-1.0)
+    parser.add_argument("--top_p", type=float, default=-1.0)
+    parser.add_argument("--top_k", type=int, default=-1)
+    parser.add_argument("--max_new_tokens", type=int, default=-1)
+    parser.add_argument("--repetition_penalty", type=float, default=-1.0)
+
     parser.add_argument("--send", action="store_true", help="Actually send message to KakaoTalk.")
+    parser.add_argument("--dry", action="store_true", help="Force dry-run mode.")
     parser.add_argument(
         "--print_mouse",
         action="store_true",
         help="Print mouse coordinates continuously and exit (for calibration).",
     )
-    parser.add_argument(
-        "--no_confirm",
-        action="store_true",
-        help="Skip terminal confirmation before each send.",
-    )
+    parser.add_argument("--no_confirm", action="store_true", help="Skip terminal confirmation before each send.")
     parser.add_argument("--no_enter", action="store_true", help="Paste only; do not press Enter.")
     args = parser.parse_args()
 
@@ -141,75 +146,123 @@ def main() -> None:
             safe_print("\nmouse capture stopped")
         return
 
-    engine = InferenceEngine.load(args.ckpt, device=args.device, dtype=args.dtype)
-    speakers = engine.tokenizer.speaker_names
-    if args.bot_speaker not in speakers:
-        raise ValueError(f"Unknown bot speaker: {args.bot_speaker}")
+    gen_cfg = load_gen_config(config_path=args.config_gen, env_path=args.env_path)
+    sampling_cfg = dict(gen_cfg.get("sampling", {}))
+    bridge_cfg = dict(gen_cfg.get("bridge", {}))
+    chat_cfg = dict(gen_cfg.get("chat", {}))
+    runtime_cfg = dict(gen_cfg.get("runtime", {}))
+    security_cfg = dict(gen_cfg.get("security", {}))
 
-    chat_xy = parse_xy(args.chat_xy)
-    input_xy = parse_xy(args.input_xy)
+    require_password(
+        security_cfg=security_cfg,
+        password=(args.password or None),
+        env_path=args.env_path,
+    )
+
+    bot_speaker = args.bot_speaker or str(chat_cfg.get("bot_speaker", ""))
+    if not bot_speaker:
+        raise ValueError("bot_speaker is required (via --bot_speaker or configs/gen.yaml).")
+
+    window_title = args.window_title or str(bridge_cfg.get("window_title", ""))
+    chat_xy_raw = args.chat_xy or str(bridge_cfg.get("chat_xy", ""))
+    input_xy_raw = args.input_xy or str(bridge_cfg.get("input_xy", ""))
+    if not chat_xy_raw or not input_xy_raw:
+        raise ValueError("chat_xy and input_xy are required (CLI or config).")
+    chat_xy = parse_xy(chat_xy_raw)
+    input_xy = parse_xy(input_xy_raw)
+
+    poll_sec = args.poll_sec if args.poll_sec > 0 else float(bridge_cfg.get("poll_sec", 2.0))
+    max_history_turns = (
+        args.max_history_turns if args.max_history_turns > 0 else int(bridge_cfg.get("max_history_turns", 40))
+    )
+    temperature = args.temperature if args.temperature >= 0 else float(sampling_cfg.get("temperature", 0.9))
+    top_p = args.top_p if args.top_p >= 0 else float(sampling_cfg.get("top_p", 0.95))
+    top_k = args.top_k if args.top_k >= 0 else int(sampling_cfg.get("top_k", 120))
+    max_new_tokens = args.max_new_tokens if args.max_new_tokens > 0 else int(sampling_cfg.get("max_new_tokens", 120))
+    repetition_penalty = (
+        args.repetition_penalty
+        if args.repetition_penalty >= 0
+        else float(sampling_cfg.get("repetition_penalty", 1.02))
+    )
+
+    send_enabled = bool(args.send and not args.dry)
+
+    device = args.device or str(runtime_cfg.get("device", "auto"))
+    dtype = args.dtype or str(runtime_cfg.get("dtype", "auto"))
+    engine = InferenceEngine.load(
+        checkpoint_path=(args.ckpt or None),
+        device=device,
+        dtype=dtype,
+        gen_config_path=args.config_gen,
+        env_path=args.env_path,
+        run_name_override=args.run_name,
+    )
+    speakers = engine.tokenizer.speaker_names
+    if bot_speaker not in speakers:
+        raise ValueError(f"Unknown bot speaker: {bot_speaker}")
 
     seen_ids: set[tuple[str, str, str]] = set()
-    history: deque[tuple[str, str]] = deque(maxlen=args.max_history_turns)
+    history: deque[tuple[str, str]] = deque(maxlen=max_history_turns)
 
-    mode = "SEND" if args.send else "DRY-RUN"
-    safe_print(f"[bridge] mode={mode} bot={args.bot_speaker} poll={args.poll_sec}s")
-    if not args.send:
-        safe_print("[bridge] --send 미설정: 톡창으로 전송하지 않고 콘솔 출력만 수행")
+    mode = "SEND" if send_enabled else "DRY-RUN"
+    safe_print(f"[bridge] checkpoint={engine.checkpoint_path}")
+    safe_print(f"[bridge] mode={mode} bot={bot_speaker} poll={poll_sec}s")
+    if not send_enabled:
+        safe_print("[bridge] dry-run mode: no message will be sent.")
 
     while True:
         try:
-            if args.window_title:
-                focus_window(args.window_title)
+            if window_title:
+                focus_window(window_title)
 
             raw = copy_chat_text(chat_xy)
-            latest = extract_last_message(raw, bot_speaker=args.bot_speaker)
+            latest = extract_last_message(raw, bot_speaker=bot_speaker)
             if latest is None:
-                time.sleep(args.poll_sec)
+                time.sleep(poll_sec)
                 continue
 
             ts, speaker, text = latest
             msg_id = (ts, speaker, text)
             if msg_id in seen_ids:
-                time.sleep(args.poll_sec)
+                time.sleep(poll_sec)
                 continue
             seen_ids.add(msg_id)
 
             history.append((speaker, text))
             reply = engine.generate_reply(
                 history=list(history),
-                bot_speaker=args.bot_speaker,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                top_k=args.top_k,
-                top_p=args.top_p,
-                repetition_penalty=args.repetition_penalty,
+                bot_speaker=bot_speaker,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
             )
-            history.append((args.bot_speaker, reply))
+            history.append((bot_speaker, reply))
 
             safe_print(f"[in ] {speaker}: {text}")
-            safe_print(f"[out] {args.bot_speaker}: {reply}")
+            safe_print(f"[out] {bot_speaker}: {reply}")
 
-            if args.send:
+            if send_enabled:
                 do_send = True
                 if not args.no_confirm:
                     ans = input("send? [y/N] ").strip().lower()
                     do_send = ans in {"y", "yes"}
                 if do_send:
-                    if args.window_title:
-                        focus_window(args.window_title)
+                    if window_title:
+                        focus_window(window_title)
                     send_reply(reply, input_xy=input_xy, press_enter=(not args.no_enter))
                     safe_print("[send] delivered")
                 else:
                     safe_print("[send] skipped")
 
-            time.sleep(args.poll_sec)
+            time.sleep(poll_sec)
         except KeyboardInterrupt:
             safe_print("\nbridge stopped")
             break
         except Exception as exc:  # noqa: BLE001
             safe_print(f"[warn] {exc}")
-            time.sleep(args.poll_sec)
+            time.sleep(poll_sec)
 
 
 if __name__ == "__main__":

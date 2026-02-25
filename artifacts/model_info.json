@@ -1,0 +1,9 @@
+{
+  "updated_at": "2026-02-25T21:16:54",
+  "run_name": "room_v1",
+  "source": "checkpoints/room_v1/best.pt",
+  "target": "artifacts/model_latest.pt",
+  "encrypted": false,
+  "sha256": "b76d9a1a4d936061abb017e1b99b7031d834686dac3aef970b0846e49b93d253",
+  "bytes": 130006817
+}

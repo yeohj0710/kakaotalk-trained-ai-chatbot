@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+from .config import load_paths_config
 from .tokenizer import ByteSpecialTokenizer, build_speaker_token_map
 
 
@@ -169,8 +170,10 @@ def dump_jsonl(messages: list[ChatMessage], output_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preprocess KakaoTalk exported text logs.")
-    parser.add_argument("--input_glob", default="*.txt", help="Glob for raw chat export files.")
-    parser.add_argument("--output_dir", default="data/processed", help="Output directory.")
+    parser.add_argument("--config_paths", default="configs/paths.yaml", help="Paths config yaml.")
+    parser.add_argument("--env_path", default=".env", help="Optional .env file path.")
+    parser.add_argument("--input_glob", default="", help="Glob for raw chat export files.")
+    parser.add_argument("--output_dir", default="", help="Output directory.")
     parser.add_argument("--val_ratio", type=float, default=0.02, help="Validation split ratio.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--include_system", action="store_true", help="Keep system messages.")
@@ -189,13 +192,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    paths_cfg = load_paths_config(config_path=args.config_paths, env_path=args.env_path)
+    processed_cfg = dict(paths_cfg.get("processed", {}))
+    input_glob = args.input_glob or str(processed_cfg.get("input_glob", "data/raw/inbox/*.txt"))
+    output_dir_value = args.output_dir or str(processed_cfg.get("output_dir", "data/processed"))
+
     random.seed(args.seed)
 
-    input_paths = sorted(Path(".").glob(args.input_glob))
+    input_paths = sorted(Path(".").glob(input_glob))
     if not input_paths:
-        raise FileNotFoundError(f"No files matched input glob: {args.input_glob}")
+        raise FileNotFoundError(f"No files matched input glob: {input_glob}")
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(output_dir_value)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     parsed_messages: list[ChatMessage] = []

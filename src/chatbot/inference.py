@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -8,7 +9,10 @@ from typing import Iterable
 
 import torch
 
+from .config import load_gen_config
+from .crypto_utils import decrypt_file_to_bytes
 from .model import GPT, GPTConfig
+from .security import get_model_key
 from .tokenizer import ByteSpecialTokenizer
 
 
@@ -35,6 +39,50 @@ def resolve_autocast_dtype(device: str, dtype: str) -> torch.dtype | None:
     raise ValueError(f"Unsupported dtype: {dtype}")
 
 
+def resolve_checkpoint_path(
+    checkpoint_path: str | Path | None = None,
+    gen_config_path: str = "configs/gen.yaml",
+    env_path: str = ".env",
+    run_name_override: str = "",
+) -> Path:
+    if checkpoint_path:
+        ckpt = Path(checkpoint_path)
+        if not ckpt.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+        return ckpt
+
+    gen_cfg = load_gen_config(config_path=gen_config_path, env_path=env_path)
+    runtime_cfg = dict(gen_cfg.get("runtime", {}))
+    configured_ckpt = str(runtime_cfg.get("checkpoint", "")).strip()
+    if configured_ckpt:
+        configured = Path(configured_ckpt)
+        if configured.exists():
+            return configured
+
+    run_name = run_name_override or str(runtime_cfg.get("run_name", "room_v1"))
+    for pattern in runtime_cfg.get("checkpoint_preference", []):
+        candidate = Path(str(pattern).format(run_name=run_name))
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "No checkpoint found. Checked configured checkpoint and checkpoint_preference in configs/gen.yaml."
+    )
+
+
+def _load_checkpoint_payload(
+    ckpt_path: Path,
+    gen_config_path: str,
+    env_path: str,
+) -> dict:
+    if ckpt_path.suffix.lower() == ".enc":
+        gen_cfg = load_gen_config(config_path=gen_config_path, env_path=env_path)
+        security_cfg = dict(gen_cfg.get("security", {}))
+        key = get_model_key(security_cfg=security_cfg, env_path=env_path)
+        raw = decrypt_file_to_bytes(source_path=ckpt_path, secret=key)
+        return torch.load(io.BytesIO(raw), map_location="cpu")
+    return torch.load(ckpt_path, map_location="cpu")
+
+
 class InferenceEngine:
     def __init__(
         self,
@@ -42,28 +90,57 @@ class InferenceEngine:
         tokenizer: ByteSpecialTokenizer,
         device: str,
         autocast_dtype: torch.dtype | None,
+        checkpoint_path: Path,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.autocast_dtype = autocast_dtype
+        self.checkpoint_path = checkpoint_path
 
     @classmethod
     def load(
         cls,
-        checkpoint_path: str | Path,
+        checkpoint_path: str | Path | None = None,
         device: str = "auto",
         dtype: str = "auto",
+        gen_config_path: str = "configs/gen.yaml",
+        env_path: str = ".env",
+        run_name_override: str = "",
     ) -> "InferenceEngine":
-        checkpoint_path = Path(checkpoint_path)
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        resolved_ckpt = resolve_checkpoint_path(
+            checkpoint_path=checkpoint_path,
+            gen_config_path=gen_config_path,
+            env_path=env_path,
+            run_name_override=run_name_override,
+        )
+        checkpoint = _load_checkpoint_payload(
+            ckpt_path=resolved_ckpt,
+            gen_config_path=gen_config_path,
+            env_path=env_path,
+        )
 
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        tokenizer_path = checkpoint.get("tokenizer_path")
-        if tokenizer_path is None:
-            tokenizer_path = checkpoint_path.parent / "tokenizer.json"
-        tokenizer = ByteSpecialTokenizer.load(tokenizer_path)
+        tokenizer_state = checkpoint.get("tokenizer_state")
+        if isinstance(tokenizer_state, dict):
+            tokenizer = ByteSpecialTokenizer(
+                speaker_to_token=dict(tokenizer_state.get("speaker_to_token", {})),
+                special_tokens=list(tokenizer_state.get("special_tokens", [])),
+            )
+        else:
+            tokenizer_path = checkpoint.get("tokenizer_path")
+            if tokenizer_path is None:
+                tokenizer_path = resolved_ckpt.parent / "tokenizer.json"
+            tokenizer_path = Path(tokenizer_path)
+            if not tokenizer_path.exists():
+                fallback = Path("data/processed/tokenizer.json")
+                if fallback.exists():
+                    tokenizer_path = fallback
+                else:
+                    raise FileNotFoundError(
+                        f"Tokenizer file not found: {tokenizer_path}. "
+                        "Run preprocessing or use a checkpoint with embedded tokenizer_state."
+                    )
+            tokenizer = ByteSpecialTokenizer.load(tokenizer_path)
 
         config = GPTConfig(**checkpoint["model_config"])
         model = GPT(config)
@@ -78,6 +155,7 @@ class InferenceEngine:
             tokenizer=tokenizer,
             device=resolved_device,
             autocast_dtype=autocast_dtype,
+            checkpoint_path=resolved_ckpt,
         )
 
     def _autocast_context(self) -> contextlib.AbstractContextManager:
@@ -154,6 +232,7 @@ class InferenceEngine:
     def metadata(self) -> dict[str, object]:
         return {
             "device": self.device,
+            "checkpoint_path": str(self.checkpoint_path),
             "vocab_size": self.tokenizer.vocab_size,
             "speakers": self.tokenizer.speaker_names,
             "config": asdict(self.model.config),

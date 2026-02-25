@@ -1,0 +1,37 @@
+runtime:
+  run_name: room_v1
+  checkpoint: ""
+  checkpoint_preference:
+    - artifacts/model_latest.enc
+    - artifacts/model_latest.pt
+    - checkpoints/{run_name}/best.pt
+    - checkpoints/{run_name}/latest.pt
+  device: auto
+  dtype: auto
+
+sampling:
+  max_new_tokens: 120
+  temperature: 0.9
+  top_k: 120
+  top_p: 0.95
+  repetition_penalty: 1.02
+
+chat:
+  bot_speaker: "${CHATBOT_DEFAULT_BOT:최근용}"
+  user_speaker: "${CHATBOT_DEFAULT_USER:김영찬}"
+  max_history_turns: 50
+
+bridge:
+  window_title: "카카오톡"
+  chat_xy: "500,320"
+  input_xy: "520,980"
+  poll_sec: 2.0
+  max_history_turns: 40
+  dry_run_default: true
+
+security:
+  require_password: true
+  password_env: CHATBOT_PASSWORD
+  password_hash_env: CHATBOT_PASSWORD_HASH
+  model_key_env: CHATBOT_MODEL_KEY
+

@@ -1,0 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+numpy>=1.26
+torch==2.10.0+cu130; platform_system == "Windows"
+torch; platform_system != "Windows"
+tqdm>=4.66
+PyYAML>=6.0
+pyautogui>=0.9.54
+pyperclip>=1.8.2
+pygetwindow>=0.0.9
+cryptography>=44.0

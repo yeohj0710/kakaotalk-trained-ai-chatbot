@@ -1,0 +1,46 @@
+run_name: room_v1
+auto_resume: true
+resume_path: ""
+stop_file_name: STOP
+
+runtime:
+  seed: 42
+  device: auto
+  dtype: auto
+  compile: false
+
+data:
+  data_dir: data/processed
+  tokenizer_path: data/processed/tokenizer.json
+  train_bin: data/processed/train.bin
+  val_bin: data/processed/val.bin
+
+model:
+  block_size: 256
+  n_layer: 6
+  n_head: 6
+  n_embd: 384
+  dropout: 0.1
+  bias: false
+
+optimization:
+  batch_size: 32
+  grad_accum_steps: 1
+  max_steps: 10000
+  learning_rate: 0.0003
+  min_lr: 0.00003
+  warmup_steps: 300
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+
+logging:
+  log_interval: 50
+  eval_interval: 500
+  eval_iters: 20
+  save_interval: 500
+  keep_last_n_snapshots: 8
+  sample_prompts:
+    - "<|bos|>"
+

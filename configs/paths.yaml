@@ -1,0 +1,30 @@
+defaults:
+  run_name: room_v1
+
+raw:
+  root_glob: "*.txt"
+  root_exclude:
+    - requirements.txt
+    - PORTABLE_STATE.txt
+  inbox_dir: data/raw/inbox
+  organized_dir: data/raw/organized
+  manifest_path: data/raw/manifest.json
+
+processed:
+  input_glob: data/raw/inbox/*.txt
+  output_dir: data/processed
+
+checkpoints:
+  root_dir: checkpoints
+
+artifacts:
+  dir: artifacts
+  latest_model_name: model_latest.pt
+  latest_model_enc_name: model_latest.enc
+  model_info_name: model_info.json
+
+publish:
+  source_preference:
+    - checkpoints/{run_name}/best.pt
+    - checkpoints/{run_name}/latest.pt
+
