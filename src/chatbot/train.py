@@ -17,6 +17,7 @@ import torch
 from .config import load_paths_config, load_train_config, save_json, save_yaml
 from .console import to_console_safe
 from .model import GPT, GPTConfig
+from .text_postprocess import OutputOptions, postprocess_generated_text
 from .tokenizer import ByteSpecialTokenizer
 
 
@@ -213,6 +214,12 @@ def save_eval_samples(
 ) -> list[dict[str, str]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     generated_rows: list[dict[str, str]] = []
+    output_options = OutputOptions(
+        text_only=True,
+        max_chars=0,
+        strip_prefix=True,
+        stop_on_next_turn=True,
+    )
     with torch.no_grad():
         for prompt in prompts:
             prompt_ids = tokenizer.encode(prompt)
@@ -231,14 +238,21 @@ def save_eval_samples(
                     top_p=0.95,
                     eos_token_id=tokenizer.eos_id,
                 )
-            sample = tokenizer.decode(y[0].tolist())
-            generated_rows.append({"prompt": prompt, "sample": sample})
+            sample_raw = tokenizer.decode(y[0].tolist())
+            sample = postprocess_generated_text(
+                raw_text=sample_raw,
+                tokenizer=tokenizer,
+                bot_speaker=None,
+                options=output_options,
+            )
+            generated_rows.append({"prompt": prompt, "sample": sample, "sample_raw": sample_raw})
 
     sample_path = output_dir / f"sample_step_{step:06d}.txt"
     with sample_path.open("w", encoding="utf-8") as handle:
         for row in generated_rows:
             handle.write(f"[PROMPT]\n{row['prompt']}\n\n")
             handle.write(f"[SAMPLE]\n{row['sample']}\n")
+            handle.write(f"\n[RAW]\n{row['sample_raw']}\n")
             handle.write("\n" + ("=" * 60) + "\n\n")
     return generated_rows
 

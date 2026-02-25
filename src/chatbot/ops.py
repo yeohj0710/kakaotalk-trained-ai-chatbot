@@ -17,7 +17,11 @@ from .security import get_model_key
 
 def _run_module(module: str, args: Sequence[str]) -> int:
     cmd = [sys.executable, "-m", module, *args]
-    print(json.dumps({"exec": cmd}, ensure_ascii=False))
+    redacted = list(cmd)
+    for idx, value in enumerate(redacted[:-1]):
+        if value in {"--password", "--key"}:
+            redacted[idx + 1] = "***"
+    print(json.dumps({"exec": redacted}, ensure_ascii=False))
     proc = subprocess.run(cmd, check=False)
     return proc.returncode
 
@@ -135,6 +139,8 @@ def cmd_bridge(args: argparse.Namespace) -> int:
         module_args.append("--send")
     if args.dry:
         module_args.append("--dry")
+    if args.ui_dry:
+        module_args.append("--ui_dry")
     if args.print_mouse:
         module_args.append("--print_mouse")
     return _run_module("chatbot.kakao_bridge", module_args)
@@ -261,6 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bridge.add_argument("--password", default="")
     p_bridge.add_argument("--send", action="store_true")
     p_bridge.add_argument("--dry", action="store_true")
+    p_bridge.add_argument("--ui_dry", action="store_true")
     p_bridge.add_argument("--print_mouse", action="store_true")
     p_bridge.set_defaults(func=cmd_bridge)
 

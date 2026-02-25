@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -102,9 +102,25 @@ DEFAULT_GEN: ConfigDict = {
         "top_p": 0.95,
         "repetition_penalty": 1.02,
     },
+    "output": {
+        "text_only": True,
+        "max_chars": 400,
+        "strip_prefix": True,
+        "stop_on_next_turn": True,
+    },
+    "debug": {"return_raw": False},
+    "dialogue": {
+        "mode": "anonymous",
+        "max_turns": 12,
+        "max_context_tokens": 2048,
+        "user_tag": "<U>",
+        "bot_tag": "<B>",
+        "user_speaker": "${CHATBOT_DEFAULT_USER:김교수}",
+        "bot_speaker": "${CHATBOT_DEFAULT_BOT:구영휴}",
+    },
     "chat": {
-        "bot_speaker": "${CHATBOT_DEFAULT_BOT:최근용}",
-        "user_speaker": "${CHATBOT_DEFAULT_USER:김영찬}",
+        "bot_speaker": "${CHATBOT_DEFAULT_BOT:구영휴}",
+        "user_speaker": "${CHATBOT_DEFAULT_USER:김교수}",
         "max_history_turns": 50,
     },
     "bridge": {
@@ -272,3 +288,6 @@ def save_json(path: str | Path, payload: dict[str, Any]) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+

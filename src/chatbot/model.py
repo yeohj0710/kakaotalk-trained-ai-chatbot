@@ -185,7 +185,9 @@ class GPT(nn.Module):
         top_p: float | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.0,
+        stop_token_ids: list[int] | None = None,
     ) -> torch.Tensor:
+        stop_set = set(int(token_id) for token_id in (stop_token_ids or []))
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.block_size :]
             logits, _ = self(idx_cond)
@@ -219,7 +221,14 @@ class GPT(nn.Module):
                 probs = F.softmax(logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
 
-            idx = torch.cat((idx, next_token), dim=1)
+            should_stop = False
             if eos_token_id is not None and torch.all(next_token == eos_token_id):
+                should_stop = True
+            if not should_stop and stop_set:
+                token_values = next_token.detach().view(-1).tolist()
+                if all(int(token) in stop_set for token in token_values):
+                    should_stop = True
+            if should_stop:
                 break
+            idx = torch.cat((idx, next_token), dim=1)
         return idx

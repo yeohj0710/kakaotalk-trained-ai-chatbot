@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import re
@@ -16,7 +16,7 @@ EXPORT_LINE_PATTERN = re.compile(
     r"^(?P<ts>\d{4}\. \d{1,2}\. \d{1,2}\. \d{1,2}:\d{2}), (?P<speaker>[^:]+) : (?P<text>.+)$"
 )
 SIMPLE_LINE_PATTERN = re.compile(r"^(?P<speaker>[^:]{1,30})\s*:\s*(?P<text>.+)$")
-SYSTEM_HINT_PATTERN = re.compile(r"(초대했습니다|나갔습니다|들어왔습니다|메시지가 삭제되었습니다)")
+SYSTEM_HINT_PATTERN = re.compile(r"(메시지가 삭제되었습니다|들어왔습니다|나갔습니다|초대했습니다)")
 
 
 def parse_xy(raw: str) -> tuple[int, int]:
@@ -66,7 +66,7 @@ def send_reply(text: str, input_xy: tuple[int, int], press_enter: bool) -> None:
         pyautogui.press("enter")
 
 
-def extract_last_message(raw_text: str, bot_speaker: str) -> tuple[str, str, str] | None:
+def extract_last_message(raw_text: str, ignore_speaker: str = "") -> tuple[str, str, str] | None:
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     for line in reversed(lines):
         if SYSTEM_HINT_PATTERN.search(line):
@@ -76,7 +76,7 @@ def extract_last_message(raw_text: str, bot_speaker: str) -> tuple[str, str, str
             speaker = match.group("speaker").strip()
             text = match.group("text").strip()
             ts = match.group("ts").strip()
-            if speaker and text and speaker != bot_speaker:
+            if speaker and text and (not ignore_speaker or speaker != ignore_speaker):
                 return ts, speaker, text
             continue
         match = SIMPLE_LINE_PATTERN.match(line)
@@ -84,16 +84,80 @@ def extract_last_message(raw_text: str, bot_speaker: str) -> tuple[str, str, str
             speaker = match.group("speaker").strip()
             text = match.group("text").strip()
             ts = datetime.now().isoformat(timespec="seconds")
-            if speaker and text and speaker != bot_speaker:
+            if speaker and text and (not ignore_speaker or speaker != ignore_speaker):
                 return ts, speaker, text
     return None
+
+
+def run_local_dry_mode(
+    engine: InferenceEngine,
+    named_mode: bool,
+    user_speaker: str,
+    bot_speaker: str,
+    max_history_turns: int,
+    max_context_tokens: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    repetition_penalty: float,
+) -> None:
+    history: deque[tuple[str, str]] = deque(maxlen=max_history_turns)
+    safe_print("[bridge] dry-run local mode: no Kakao window automation")
+    safe_print("Type /exit to stop.")
+
+    while True:
+        try:
+            user_input = input("> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            safe_print("\nbridge stopped")
+            break
+
+        if not user_input:
+            continue
+        if user_input in {"/exit", "/quit"}:
+            safe_print("bridge stopped")
+            break
+
+        history.append((user_speaker, user_input) if named_mode else ("user", user_input))
+        if engine.debug_return_raw:
+            reply, raw_reply = engine.generate_reply_with_raw(
+                history=list(history),
+                user_speaker=user_speaker,
+                bot_speaker=bot_speaker,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                max_turns_override=max_history_turns,
+                max_context_tokens_override=max_context_tokens,
+            )
+        else:
+            reply = engine.generate_reply(
+                history=list(history),
+                user_speaker=user_speaker,
+                bot_speaker=bot_speaker,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                max_turns_override=max_history_turns,
+                max_context_tokens_override=max_context_tokens,
+            )
+
+        history.append((bot_speaker, reply) if named_mode else ("bot", reply))
+        safe_print(f"[out] {reply}")
+        if engine.debug_return_raw:
+            safe_print(f"[raw] {raw_reply}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "KakaoTalk bridge via desktop UI automation. "
-            "Defaults to DRY-RUN unless --send is explicitly provided."
+            "Defaults to DRY-RUN local mode unless --send or --ui_dry is provided."
         )
     )
     parser.add_argument("--ckpt", default="")
@@ -118,6 +182,7 @@ def main() -> None:
 
     parser.add_argument("--send", action="store_true", help="Actually send message to KakaoTalk.")
     parser.add_argument("--dry", action="store_true", help="Force dry-run mode.")
+    parser.add_argument("--ui_dry", action="store_true", help="Use Kakao UI polling in dry-run mode.")
     parser.add_argument(
         "--print_mouse",
         action="store_true",
@@ -127,15 +192,11 @@ def main() -> None:
     parser.add_argument("--no_enter", action="store_true", help="Paste only; do not press Enter.")
     args = parser.parse_args()
 
-    try:
-        import pyautogui  # type: ignore # noqa: F401
-        import pyperclip  # type: ignore # noqa: F401
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("kakao_bridge requires pyautogui and pyperclip") from exc
-
     if args.print_mouse:
-        import pyautogui  # type: ignore
-
+        try:
+            import pyautogui  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("--print_mouse requires pyautogui") from exc
         safe_print("Press Ctrl+C to stop mouse coordinate capture.")
         try:
             while True:
@@ -150,6 +211,7 @@ def main() -> None:
     sampling_cfg = dict(gen_cfg.get("sampling", {}))
     bridge_cfg = dict(gen_cfg.get("bridge", {}))
     chat_cfg = dict(gen_cfg.get("chat", {}))
+    dialogue_cfg = dict(gen_cfg.get("dialogue", {}))
     runtime_cfg = dict(gen_cfg.get("runtime", {}))
     security_cfg = dict(gen_cfg.get("security", {}))
 
@@ -159,22 +221,12 @@ def main() -> None:
         env_path=args.env_path,
     )
 
-    bot_speaker = args.bot_speaker or str(chat_cfg.get("bot_speaker", ""))
-    if not bot_speaker:
-        raise ValueError("bot_speaker is required (via --bot_speaker or configs/gen.yaml).")
-
-    window_title = args.window_title or str(bridge_cfg.get("window_title", ""))
-    chat_xy_raw = args.chat_xy or str(bridge_cfg.get("chat_xy", ""))
-    input_xy_raw = args.input_xy or str(bridge_cfg.get("input_xy", ""))
-    if not chat_xy_raw or not input_xy_raw:
-        raise ValueError("chat_xy and input_xy are required (CLI or config).")
-    chat_xy = parse_xy(chat_xy_raw)
-    input_xy = parse_xy(input_xy_raw)
+    configured_bot_speaker = args.bot_speaker or str(chat_cfg.get("bot_speaker", ""))
+    configured_user_speaker = str(chat_cfg.get("user_speaker", ""))
 
     poll_sec = args.poll_sec if args.poll_sec > 0 else float(bridge_cfg.get("poll_sec", 2.0))
-    max_history_turns = (
-        args.max_history_turns if args.max_history_turns > 0 else int(bridge_cfg.get("max_history_turns", 40))
-    )
+    max_history_turns = args.max_history_turns if args.max_history_turns > 0 else int(dialogue_cfg.get("max_turns", 12))
+    max_context_tokens = int(dialogue_cfg.get("max_context_tokens", 2048))
     temperature = args.temperature if args.temperature >= 0 else float(sampling_cfg.get("temperature", 0.9))
     top_p = args.top_p if args.top_p >= 0 else float(sampling_cfg.get("top_p", 0.95))
     top_k = args.top_k if args.top_k >= 0 else int(sampling_cfg.get("top_k", 120))
@@ -186,6 +238,7 @@ def main() -> None:
     )
 
     send_enabled = bool(args.send and not args.dry)
+    use_ui = bool(send_enabled or args.ui_dry)
 
     device = args.device or str(runtime_cfg.get("device", "auto"))
     dtype = args.dtype or str(runtime_cfg.get("dtype", "auto"))
@@ -198,25 +251,70 @@ def main() -> None:
         run_name_override=args.run_name,
     )
     speakers = engine.tokenizer.speaker_names
-    if bot_speaker not in speakers:
-        raise ValueError(f"Unknown bot speaker: {bot_speaker}")
+    dialogue_mode = engine.dialogue_mode
+    named_mode = dialogue_mode == "named"
+    user_speaker, bot_speaker = engine.resolve_dialogue_speakers(
+        user_speaker=(configured_user_speaker or None),
+        bot_speaker=(configured_bot_speaker if configured_bot_speaker in speakers else None),
+    )
+
+    if not use_ui:
+        safe_print(f"[bridge] checkpoint={engine.checkpoint_path}")
+        safe_print(f"[bridge] mode=DRY-RUN_LOCAL dialogue={dialogue_mode}")
+        run_local_dry_mode(
+            engine=engine,
+            named_mode=named_mode,
+            user_speaker=user_speaker,
+            bot_speaker=bot_speaker,
+            max_history_turns=max_history_turns,
+            max_context_tokens=max_context_tokens,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+        )
+        return
+
+    try:
+        import pyautogui  # type: ignore # noqa: F401
+        import pyperclip  # type: ignore # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("kakao_bridge UI mode requires pyautogui and pyperclip") from exc
+
+    window_title = args.window_title or str(bridge_cfg.get("window_title", ""))
+    chat_xy_raw = args.chat_xy or str(bridge_cfg.get("chat_xy", ""))
+    input_xy_raw = args.input_xy or str(bridge_cfg.get("input_xy", ""))
+    if not chat_xy_raw or not input_xy_raw:
+        raise ValueError("chat_xy and input_xy are required for UI mode (CLI or config).")
+    chat_xy = parse_xy(chat_xy_raw)
+    input_xy = parse_xy(input_xy_raw)
+
+    ignore_speaker = ""
+    bridge_ignore = str(bridge_cfg.get("ignore_speaker", "")).strip()
+    if args.bot_speaker and args.bot_speaker not in speakers:
+        ignore_speaker = args.bot_speaker
+    elif bridge_ignore:
+        ignore_speaker = bridge_ignore
+    elif named_mode:
+        ignore_speaker = bot_speaker
 
     seen_ids: set[tuple[str, str, str]] = set()
     history: deque[tuple[str, str]] = deque(maxlen=max_history_turns)
 
-    mode = "SEND" if send_enabled else "DRY-RUN"
+    mode = "SEND" if send_enabled else "DRY-RUN_UI"
     safe_print(f"[bridge] checkpoint={engine.checkpoint_path}")
-    safe_print(f"[bridge] mode={mode} bot={bot_speaker} poll={poll_sec}s")
+    safe_print(f"[bridge] mode={mode} dialogue={dialogue_mode} poll={poll_sec}s")
     if not send_enabled:
-        safe_print("[bridge] dry-run mode: no message will be sent.")
+        safe_print("[bridge] dry-run UI mode: messages are not sent.")
 
     while True:
         try:
             if window_title:
                 focus_window(window_title)
 
-            raw = copy_chat_text(chat_xy)
-            latest = extract_last_message(raw, bot_speaker=bot_speaker)
+            chat_snapshot = copy_chat_text(chat_xy)
+            latest = extract_last_message(chat_snapshot, ignore_speaker=ignore_speaker)
             if latest is None:
                 time.sleep(poll_sec)
                 continue
@@ -228,20 +326,39 @@ def main() -> None:
                 continue
             seen_ids.add(msg_id)
 
-            history.append((speaker, text))
-            reply = engine.generate_reply(
-                history=list(history),
-                bot_speaker=bot_speaker,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-            )
-            history.append((bot_speaker, reply))
+            history.append((speaker, text) if named_mode else ("user", text))
+            if engine.debug_return_raw:
+                reply, raw_reply = engine.generate_reply_with_raw(
+                    history=list(history),
+                    user_speaker=user_speaker,
+                    bot_speaker=bot_speaker,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    max_turns_override=max_history_turns,
+                    max_context_tokens_override=max_context_tokens,
+                )
+            else:
+                reply = engine.generate_reply(
+                    history=list(history),
+                    user_speaker=user_speaker,
+                    bot_speaker=bot_speaker,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    max_turns_override=max_history_turns,
+                    max_context_tokens_override=max_context_tokens,
+                )
+            history.append((bot_speaker, reply) if named_mode else ("bot", reply))
 
             safe_print(f"[in ] {speaker}: {text}")
-            safe_print(f"[out] {bot_speaker}: {reply}")
+            safe_print(f"[out] {reply}")
+            if engine.debug_return_raw:
+                safe_print(f"[raw] {raw_reply}")
 
             if send_enabled:
                 do_send = True
@@ -267,3 +384,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

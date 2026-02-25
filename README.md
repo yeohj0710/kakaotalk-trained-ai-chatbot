@@ -33,3 +33,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 bridge -
 
 - 추론만: artifacts/model_latest.(pt|enc) 를 새 PC에 복사 + .env에 CHATBOT_PASSWORD(및 enc면 MODEL_KEY) 동일하게
 - 학습 이어서: 위 + checkpoints/<run_name>/ 폴더까지 통째로 복사 (latest.pt 포함)
+
+[Output Policy]
+- `run.ps1 reply`, `run.ps1 chat`, `run.ps1 bridge` output/send text-only by default (role/speaker prefix hidden).
+- If you need raw output for debugging, set `output.text_only: false` or `debug.return_raw: true` in `configs/gen.yaml`.
+- Default dialogue mode is now anonymous 2-person chat (ChatGPT-style): no real-name speaker labels are shown in `reply/chat/bridge`.
+- `run.ps1 bridge --dry` now runs local test mode (no Kakao window copy/click needed). Use `run.ps1 bridge --dry --ui_dry` when you want UI polling without sending.

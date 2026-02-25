@@ -51,6 +51,7 @@ def main() -> None:
     sampling_cfg = dict(gen_cfg.get("sampling", {}))
     runtime_cfg = dict(gen_cfg.get("runtime", {}))
     chat_cfg = dict(gen_cfg.get("chat", {}))
+    dialogue_cfg = dict(gen_cfg.get("dialogue", {}))
     security_cfg = dict(gen_cfg.get("security", {}))
 
     require_password(
@@ -70,6 +71,8 @@ def main() -> None:
         if args.repetition_penalty >= 0
         else float(sampling_cfg.get("repetition_penalty", 1.02))
     )
+    max_turns = int(dialogue_cfg.get("max_turns", 12))
+    max_context_tokens = int(dialogue_cfg.get("max_context_tokens", 2048))
 
     engine = InferenceEngine.load(
         checkpoint_path=(args.ckpt or None),
@@ -82,40 +85,77 @@ def main() -> None:
 
     if args.mode == "complete":
         prompt = args.prompt or engine.tokenizer.bos_token
-        out = engine.complete(
-            prompt=prompt,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            stop_on_eos=True,
-        )
-        safe_print(out)
+        if engine.debug_return_raw:
+            out, raw = engine.complete_with_raw(
+                prompt=prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                stop_on_eos=True,
+            )
+            safe_print(out)
+            safe_print(f"[raw] {raw}")
+        else:
+            out = engine.complete(
+                prompt=prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                stop_on_eos=True,
+            )
+            safe_print(out)
         return
 
     history = parse_history(args.history)
     user_speaker = args.user_speaker or str(chat_cfg.get("user_speaker", ""))
     bot_speaker = args.bot_speaker or str(chat_cfg.get("bot_speaker", ""))
+    dialogue_mode = engine.dialogue_mode
+
     if args.message:
-        if not user_speaker:
-            raise ValueError("--user_speaker is required when --message is set")
-        history.append((user_speaker, args.message))
+        if dialogue_mode == "anonymous":
+            history.append(("user", args.message))
+        else:
+            if not user_speaker:
+                raise ValueError("--user_speaker is required when --message is set in named mode")
+            history.append((user_speaker, args.message))
     if not history:
         raise ValueError("Chat mode requires --history and/or --message")
-    if not bot_speaker:
-        raise ValueError("--bot_speaker is required in chat mode")
+    if dialogue_mode == "named" and not bot_speaker:
+        raise ValueError("--bot_speaker is required in named chat mode")
 
-    reply = engine.generate_reply(
-        history=history,
-        bot_speaker=bot_speaker,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-    )
-    safe_print(reply)
+    if engine.debug_return_raw:
+        reply, raw = engine.generate_reply_with_raw(
+            history=history,
+            user_speaker=user_speaker,
+            bot_speaker=bot_speaker,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            max_turns_override=max_turns,
+            max_context_tokens_override=max_context_tokens,
+        )
+        safe_print(reply)
+        safe_print(f"[raw] {raw}")
+    else:
+        reply = engine.generate_reply(
+            history=history,
+            user_speaker=user_speaker,
+            bot_speaker=bot_speaker,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            max_turns_override=max_turns,
+            max_context_tokens_override=max_context_tokens,
+        )
+        safe_print(reply)
 
 
 if __name__ == "__main__":

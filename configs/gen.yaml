@@ -1,4 +1,4 @@
-runtime:
+﻿runtime:
   run_name: room_v1
   checkpoint: ""
   checkpoint_preference:
@@ -16,9 +16,27 @@ sampling:
   top_p: 0.95
   repetition_penalty: 1.02
 
+output:
+  text_only: true
+  max_chars: 400
+  strip_prefix: true
+  stop_on_next_turn: true
+
+debug:
+  return_raw: false
+
+dialogue:
+  mode: anonymous
+  max_turns: 12
+  max_context_tokens: 2048
+  user_tag: "<U>"
+  bot_tag: "<B>"
+  user_speaker: "${CHATBOT_DEFAULT_USER:김교수}"
+  bot_speaker: "${CHATBOT_DEFAULT_BOT:구영휴}"
+
 chat:
-  bot_speaker: "${CHATBOT_DEFAULT_BOT:최근용}"
-  user_speaker: "${CHATBOT_DEFAULT_USER:김영찬}"
+  bot_speaker: "${CHATBOT_DEFAULT_BOT:구영휴}"
+  user_speaker: "${CHATBOT_DEFAULT_USER:김교수}"
   max_history_turns: 50
 
 bridge:
@@ -34,4 +52,6 @@ security:
   password_env: CHATBOT_PASSWORD
   password_hash_env: CHATBOT_PASSWORD_HASH
   model_key_env: CHATBOT_MODEL_KEY
+
+
 
