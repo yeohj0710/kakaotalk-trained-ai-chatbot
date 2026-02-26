@@ -24,6 +24,20 @@ DEFAULT_PATHS: ConfigDict = {
     "processed": {
         "input_glob": "data/raw/inbox/*.txt",
         "output_dir": "data/processed",
+        "preprocess": {
+            "corpus_mode": "context_windows",
+            "context_turns": 8,
+            "min_context_turns": 2,
+            "sample_stride": 1,
+            "session_gap_minutes": 180,
+            "merge_same_speaker": True,
+            "merge_gap_minutes": 2,
+            "max_merged_chars": 320,
+            "min_message_chars": 2,
+            "min_target_chars": 6,
+            "max_message_chars": 320,
+            "drop_low_signal": True,
+        },
     },
     "checkpoints": {"root_dir": "checkpoints"},
     "artifacts": {
@@ -37,6 +51,9 @@ DEFAULT_PATHS: ConfigDict = {
             "checkpoints/{run_name}/best.pt",
             "checkpoints/{run_name}/latest.pt",
         ]
+    },
+    "archive": {
+        "root_dir": "data/archive",
     },
 }
 
@@ -53,7 +70,7 @@ DEFAULT_TRAIN: ConfigDict = {
         "val_bin": "data/processed/val.bin",
     },
     "model": {
-        "block_size": 256,
+        "block_size": 512,
         "n_layer": 6,
         "n_head": 6,
         "n_embd": 384,
@@ -61,8 +78,8 @@ DEFAULT_TRAIN: ConfigDict = {
         "bias": False,
     },
     "optimization": {
-        "batch_size": 32,
-        "grad_accum_steps": 1,
+        "batch_size": 16,
+        "grad_accum_steps": 2,
         "max_steps": 10000,
         "learning_rate": 3e-4,
         "min_lr": 3e-5,
@@ -112,7 +129,7 @@ DEFAULT_GEN: ConfigDict = {
     "dialogue": {
         "mode": "anonymous",
         "max_turns": 12,
-        "max_context_tokens": 2048,
+        "max_context_tokens": 512,
         "user_tag": "<U>",
         "bot_tag": "<B>",
         "user_speaker": "${CHATBOT_DEFAULT_USER:김교수}",

@@ -53,6 +53,17 @@ def cmd_organize(args: argparse.Namespace) -> int:
     return _run_module("chatbot.organize_raw", module_args)
 
 
+def cmd_archive(args: argparse.Namespace) -> int:
+    module_args = ["--paths_config", args.config_paths, "--env_path", args.env_path]
+    if args.dry:
+        module_args.append("--dry_run")
+    if args.include_raw:
+        module_args.append("--include_raw")
+    if args.tag:
+        module_args.extend(["--tag", args.tag])
+    return _run_module("chatbot.archive_state", module_args)
+
+
 def cmd_preprocess(args: argparse.Namespace) -> int:
     module_args = ["--config_paths", args.config_paths, "--env_path", args.env_path, "--mask_urls"]
     if args.drop_media_only:
@@ -217,6 +228,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_org.add_argument("--env_path", default=".env")
     p_org.add_argument("--dry", action="store_true")
     p_org.set_defaults(func=cmd_organize)
+
+    p_arch = sub.add_parser("archive", help="Archive previous processed/checkpoint/artifact data.")
+    p_arch.add_argument("--config_paths", default="configs/paths.yaml")
+    p_arch.add_argument("--env_path", default=".env")
+    p_arch.add_argument("--dry", action="store_true")
+    p_arch.add_argument("--include_raw", action="store_true")
+    p_arch.add_argument("--tag", default="")
+    p_arch.set_defaults(func=cmd_archive)
 
     p_pre = sub.add_parser("preprocess", help="Run preprocessing.")
     p_pre.add_argument("--config_paths", default="configs/paths.yaml")

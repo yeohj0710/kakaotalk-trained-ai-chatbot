@@ -1,61 +1,76 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 ## Purpose
-Operational guide for future Codex sessions on `kakaotalk-trained-ai-chatbot`.
-Goal: keep pipeline reproducible and safe for sensitive KakaoTalk exports.
+Operational guide for Codex sessions in `kakaotalk-trained-ai-chatbot`.
+Primary goal: keep training/inference reproducible while protecting private chat data.
 
-## Critical Rules
-- Never commit sensitive chat exports or derived private data.
-- Keep `data/raw/*`, `data/processed/*`, `checkpoints/*` out of git.
-- Only `artifacts/model_latest.pt` or `artifacts/model_latest.enc` may be intentionally published.
-- Bridge must stay dry-run by default; sending requires explicit `--send`.
-- Do not remove user checkpoints/data unless explicitly requested.
+## Critical Safety Rules
+- Never commit private chat data or derived private datasets.
+- Keep these out of git: `data/raw/*`, `data/processed/*`, `checkpoints/*`.
+- Only publish one model artifact: `artifacts/model_latest.pt` or `artifacts/model_latest.enc`.
+- Bridge must remain dry-run unless user explicitly passes `--send`.
+- Do not delete user data/checkpoints unless explicitly requested.
 
-## Main Entry Points
-- Unified CLI: `python -m chatbot.ops ...`
-- PowerShell wrapper: `.\scripts\run.ps1 <command> [args]`
-- Train engine: `src/chatbot/train.py`
-- Inference loader: `src/chatbot/inference.py`
-- Raw organizer: `src/chatbot/organize_raw.py`
-- Security gate: `src/chatbot/security.py`
-- Encryption utilities: `src/chatbot/crypto_utils.py`
+## Entry Points
+- Unified CLI: `python -m chatbot.ops <command>`
+- PowerShell wrapper: `scripts/run.ps1 <command>`
+- Preprocess: `src/chatbot/preprocess.py`
+- Train: `src/chatbot/train.py`
+- Inference: `src/chatbot/inference.py`
+- Bridge: `src/chatbot/kakao_bridge.py`
+- Archive/reset: `src/chatbot/archive_state.py`
 
-## Config Files
-- `configs/paths.yaml`: data/checkpoint/artifact paths
-- `configs/train.yaml`: train/resume/hyperparameters
-- `configs/gen.yaml`: generation/bridge/security defaults
-- `.env`: local secrets (not committed)
-- `.env.example`: template
+## Command Set (keep stable)
+- `organize`
+- `archive`
+- `preprocess`
+- `train`
+- `reply`
+- `chat`
+- `bridge`
+- `publish`
+- `encrypt-model`
+- `decrypt-model`
 
-## Standard Workflow
-1. `.\scripts\run.ps1 organize`
-2. `.\scripts\run.ps1 preprocess`
-3. `.\scripts\run.ps1 train`
-4. `.\scripts\run.ps1 reply "테스트 메시지"`
-5. `.\scripts\run.ps1 chat`
-6. `.\scripts\run.ps1 bridge --dry`
-7. Optional publish: `.\scripts\publish_model.ps1 -Encrypt`
+## Current Training Design
+- Default preprocess mode is `context_windows`.
+- Conversation data is split into sessions per source file and time gap.
+- Each training example uses multiple previous turns (`context_turns`) + target turn.
+- Low-signal/too-short messages can be filtered by preprocess config.
+
+Config location:
+- `configs/paths.yaml > processed.preprocess`
 
 ## Resume Behavior
-- Training auto-resumes from `checkpoints/<run_name>/latest.pt` by default.
+- Auto-resume from `checkpoints/<run_name>/latest.pt`.
 - Graceful stop:
-  - `Ctrl+C` (latest checkpoint saved)
-  - Create `checkpoints/<run_name>/STOP` (picked up during training loop)
+  - `Ctrl+C`
+  - create `checkpoints/<run_name>/STOP`
 - Immutable resume checks:
-  - model architecture and vocab/tokenizer content mismatch => hard error.
-- Mutable overrides:
-  - optimization/logging/runtime knobs are allowed and logged.
+  - model architecture mismatch
+  - tokenizer content/hash mismatch
+- Mutable overrides are logged.
 
-## Validation Checklist
-- `python -m compileall src`
-- `python -m chatbot.ops organize --dry`
-- `python -m chatbot.ops preprocess`
-- `python -m chatbot.ops train --max_steps 20`
-- `python -m chatbot.ops reply "테스트"`
-- `python -m chatbot.ops publish`
+## Archive/Cleanup Workflow
+- Dry-run: `python -m chatbot.ops archive --dry`
+- Apply: `python -m chatbot.ops archive`
+- Default archives:
+  - `data/processed`
+  - `checkpoints`
+  - `artifacts/model_latest*` / `model_info.json`
+- Archive output root: `data/archive/<timestamp>_train_only/`
+
+## Quick Validation
+```bash
+python -m compileall src
+python -m chatbot.ops archive --dry
+python -m chatbot.ops preprocess
+python -m chatbot.ops train --max_steps 20
+python -m chatbot.ops reply "테스트"
+```
 
 ## Change Principles
-- Prefer extending existing modules over rewrites.
-- Keep CLI backward-compatible where practical.
-- Write config snapshots and run metadata for reproducibility.
-- Preserve Windows-first usability (`scripts/run.ps1` stays primary).
+- Keep existing CLI UX and command names intact.
+- Prefer minimal, targeted edits over full rewrites.
+- Write configs/logs/status for reproducibility.
+- Keep Bash + Windows PowerShell execution paths both usable.

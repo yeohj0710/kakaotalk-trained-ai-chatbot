@@ -16,7 +16,7 @@ data:
   val_bin: data/processed/val.bin
 
 model:
-  block_size: 256
+  block_size: 512
   n_layer: 6
   n_head: 6
   n_embd: 384
@@ -24,8 +24,8 @@ model:
   bias: false
 
 optimization:
-  batch_size: 32
-  grad_accum_steps: 1
+  batch_size: 16
+  grad_accum_steps: 2
   max_steps: 10000
   learning_rate: 0.0003
   min_lr: 0.00003

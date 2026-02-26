@@ -12,6 +12,7 @@ data/raw/inbox/
 data/raw/organized/
 data/raw/manifest.json
 data/processed/
+data/archive/
 
 # Training outputs
 checkpoints/

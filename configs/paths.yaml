@@ -13,6 +13,19 @@ raw:
 processed:
   input_glob: data/raw/inbox/*.txt
   output_dir: data/processed
+  preprocess:
+    corpus_mode: context_windows
+    context_turns: 8
+    min_context_turns: 2
+    sample_stride: 1
+    session_gap_minutes: 180
+    merge_same_speaker: true
+    merge_gap_minutes: 2
+    max_merged_chars: 320
+    min_message_chars: 2
+    min_target_chars: 6
+    max_message_chars: 320
+    drop_low_signal: true
 
 checkpoints:
   root_dir: checkpoints
@@ -28,3 +41,5 @@ publish:
     - checkpoints/{run_name}/best.pt
     - checkpoints/{run_name}/latest.pt
 
+archive:
+  root_dir: data/archive

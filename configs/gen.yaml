@@ -28,7 +28,7 @@ debug:
 dialogue:
   mode: anonymous
   max_turns: 12
-  max_context_tokens: 2048
+  max_context_tokens: 512
   user_tag: "<U>"
   bot_tag: "<B>"
   user_speaker: "${CHATBOT_DEFAULT_USER:김교수}"
