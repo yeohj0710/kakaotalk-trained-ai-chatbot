@@ -1,47 +1,49 @@
 ﻿# PORTABLE_STATE.txt
-Single source of truth for moving/resuming this project.
+Single Source of Truth for resuming this project on another machine.
 
-[Default run]
-RUN_NAME=room_v2_context
+[Current Architecture]
+- Pretrained base model + LoRA SFT
+- Run name default: room_lora_qwen3b
+- Main config: configs/sft.yaml
 
 [Required for training resume]
-- configs/paths.yaml
-- configs/train.yaml
-- configs/gen.yaml
+1) Code + config
+- configs/sft.yaml
 - .env
-- data/processed/train.bin
-- data/processed/val.bin
-- data/processed/train_loss_mask.bin
-- data/processed/val_loss_mask.bin
-- data/processed/tokenizer.json
-- checkpoints/room_v2_context/latest.pt
 
-[Required for inference-only]
-- configs/gen.yaml
+2) Data
+- data/raw/inbox/*.txt
+- data/sft/train.jsonl
+- data/sft/val.jsonl
+- data/sft/stats.json
+
+3) Checkpoints
+- checkpoints_lora/<run_name>/checkpoint-*
+- checkpoints_lora/<run_name>/adapter_latest
+- checkpoints_lora/<run_name>/adapter_best
+- checkpoints_lora/<run_name>/status.json
+
+[Required for inference only]
+- configs/sft.yaml
 - .env
-- artifacts/model_latest.pt (or model_latest.enc + CHATBOT_MODEL_KEY)
+- checkpoints_lora/<run_name>/adapter_best (or adapter_latest)
 
 [Environment variables]
 - CHATBOT_PASSWORD=...
-- CHATBOT_MODEL_KEY=... (enc model only)
-- CHATBOT_DEFAULT_USER=... (optional)
-- CHATBOT_DEFAULT_BOT=... (optional)
 
 [One-line commands]
-- Archive old state:  python -m chatbot.ops archive
-- Organize raw txt:   python -m chatbot.ops organize
-- Preprocess:         python -m chatbot.ops preprocess
-- Train/resume:       python -m chatbot.ops train
-- Quick test:         python -m chatbot.ops smoke
-- Reply:              python -m chatbot.ops reply "테스트"
-- Chat:               python -m chatbot.ops chat
-- Bridge dry-run:     python -m chatbot.ops bridge --dry
+- Archive old outputs: python -m chatbot.sft_ops archive
+- Organize raw txt:   python -m chatbot.sft_ops organize
+- Preprocess:         python -m chatbot.sft_ops preprocess
+- Train/resume:       python -m chatbot.sft_ops train
+- Reply:              python -m chatbot.sft_ops reply "테스트"
+- Chat:               python -m chatbot.sft_ops chat
+- Smoke test:         python -m chatbot.sft_ops smoke
 
-[Training objective]
-- Preprocess builds multi-turn context samples.
-- Loss mask marks response span only.
-- Trainer uses response-only masked cross-entropy.
+[Resume behavior]
+- Stop: Ctrl+C or STOP file in run dir
+- Resume: same `train` command; auto resumes from latest checkpoint
 
-[Important]
-- If tokenizer/model config changes, resume may be blocked by compatibility checks.
-- Keep private data out of git (`data/raw`, `data/processed`, `checkpoints`).
+[Practical note]
+- First run downloads base model from Hugging Face.
+- If 4bit quantization is unavailable, loader may fallback and use more VRAM.

@@ -21,6 +21,7 @@ output:
   max_chars: 400
   strip_prefix: true
   stop_on_next_turn: true
+  one_line: true
 
 debug:
   return_raw: false

@@ -288,6 +288,7 @@ def save_eval_samples(
         max_chars=0,
         strip_prefix=True,
         stop_on_next_turn=True,
+        one_line=True,
     )
     with torch.no_grad():
         for prompt in prompts:

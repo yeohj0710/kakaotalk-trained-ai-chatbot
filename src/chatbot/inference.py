@@ -175,6 +175,7 @@ class InferenceEngine:
             max_chars=int(output_cfg.get("max_chars", 400)),
             strip_prefix=bool(output_cfg.get("strip_prefix", True)),
             stop_on_next_turn=bool(output_cfg.get("stop_on_next_turn", True)),
+            one_line=bool(output_cfg.get("one_line", True)),
             user_tag=str(dialogue_cfg.get("user_tag", "<U>")),
             bot_tag=str(dialogue_cfg.get("bot_tag", "<B>")),
         )
@@ -425,7 +426,7 @@ class InferenceEngine:
             bot_speaker=None,
         )
         processed = self._postprocess(raw_text=raw_fragment, bot_speaker=None)
-        return processed, sanitize_for_send(raw_fragment, max_chars=0)
+        return processed, sanitize_for_send(raw_fragment, max_chars=0, one_line=False)
 
     def build_chat_prompt(self, history: Iterable[tuple[str, str]], next_speaker: str) -> str:
         chunks = []
@@ -503,7 +504,7 @@ class InferenceEngine:
             bot_speaker=resolved_bot,
         )
         processed = self._postprocess(raw_text=raw_fragment, bot_speaker=resolved_bot) or "..."
-        return processed, sanitize_for_send(raw_fragment, max_chars=0)
+        return processed, sanitize_for_send(raw_fragment, max_chars=0, one_line=False)
 
     def metadata(self) -> dict[str, object]:
         return {

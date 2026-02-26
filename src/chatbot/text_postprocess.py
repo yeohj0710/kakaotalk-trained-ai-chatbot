@@ -20,6 +20,7 @@ class OutputOptions:
     max_chars: int = 400
     strip_prefix: bool = True
     stop_on_next_turn: bool = True
+    one_line: bool = True
     user_tag: str = "<U>"
     bot_tag: str = "<B>"
 
@@ -199,17 +200,21 @@ def cut_at_next_turn(
     return text
 
 
-def sanitize_for_send(text: str, max_chars: int = 0) -> str:
+def sanitize_for_send(text: str, max_chars: int = 0, one_line: bool = False) -> str:
     if not text:
         return ""
     out = text.replace("\r\n", "\n").replace("\r", "\n")
     out = out.replace("\u00a0", " ")
     out = out.replace("\u200b", "")
     out = CONTROL_CHARS_RE.sub("", out)
-    out = re.sub(r"[ \t]+\n", "\n", out)
-    out = re.sub(r"\n[ \t]+", "\n", out)
-    out = re.sub(r"\n{3,}", "\n\n", out)
-    out = re.sub(r"[ \t]{2,}", " ", out)
+    if one_line:
+        out = re.sub(r"\s*\n+\s*", " ", out)
+        out = re.sub(r"[ \t]{2,}", " ", out)
+    else:
+        out = re.sub(r"[ \t]+\n", "\n", out)
+        out = re.sub(r"\n[ \t]+", "\n", out)
+        out = re.sub(r"\n{3,}", "\n\n", out)
+        out = re.sub(r"[ \t]{2,}", " ", out)
     out = out.strip()
     if max_chars > 0 and len(out) > max_chars:
         out = out[:max_chars].rstrip()
@@ -223,7 +228,7 @@ def postprocess_generated_text(
     options: OutputOptions,
 ) -> str:
     if not options.text_only:
-        return sanitize_for_send(raw_text, max_chars=options.max_chars)
+        return sanitize_for_send(raw_text, max_chars=options.max_chars, one_line=options.one_line)
 
     out = raw_text
     if options.stop_on_next_turn:
@@ -241,4 +246,4 @@ def postprocess_generated_text(
             user_tag=options.user_tag,
             bot_tag=options.bot_tag,
         )
-    return sanitize_for_send(out, max_chars=options.max_chars)
+    return sanitize_for_send(out, max_chars=options.max_chars, one_line=options.one_line)

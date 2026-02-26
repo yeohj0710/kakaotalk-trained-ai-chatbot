@@ -133,6 +133,7 @@ DEFAULT_GEN: ConfigDict = {
         "max_chars": 400,
         "strip_prefix": True,
         "stop_on_next_turn": True,
+        "one_line": True,
     },
     "debug": {"return_raw": False},
     "smoke": {

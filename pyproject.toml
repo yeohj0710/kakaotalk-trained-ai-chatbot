@@ -17,10 +17,15 @@ dependencies = [
   "pyperclip>=1.8.2",
   "pygetwindow>=0.0.9",
   "cryptography>=44.0",
+  "transformers>=4.48.0",
+  "peft>=0.14.0",
+  "accelerate>=1.2.0",
+  "datasets>=3.2.0",
+  "safetensors>=0.4.5",
 ]
 
 [project.scripts]
-chatbot-ops = "chatbot.ops:main"
+chatbot-ops = "chatbot.sft_ops:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

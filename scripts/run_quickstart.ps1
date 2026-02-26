@@ -15,6 +15,6 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install -e .
 
-python -m chatbot.ops organize
-python -m chatbot.ops preprocess
-python -m chatbot.ops train --run_name $RunName --max_steps $MaxSteps
+python -m chatbot.sft_ops organize
+python -m chatbot.sft_ops preprocess
+python -m chatbot.sft_ops train

@@ -13,9 +13,11 @@ data/raw/organized/
 data/raw/manifest.json
 data/processed/
 data/archive/
+data/sft/
 
 # Training outputs
 checkpoints/
+checkpoints_lora/
 runs/
 logs/
 *.pt

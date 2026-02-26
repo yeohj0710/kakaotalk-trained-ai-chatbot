@@ -1,60 +1,55 @@
 ﻿# AGENTS.md
 
 ## Purpose
-Operational handoff for Codex sessions in `kakaotalk-trained-ai-chatbot`.
+Handoff guide for Codex sessions in this repository.
+Current architecture is **LoRA SFT on a pretrained LLM** (not from-scratch GPT).
 
-## Critical Rules
-- Never commit private data: `data/raw/*`, `data/processed/*`, `checkpoints/*`.
-- Publish at most one artifact file: `artifacts/model_latest.pt` or `.enc`.
-- Bridge stays dry-run unless user explicitly asks `--send`.
-- Do not delete/archive user data unless requested.
+## Non-negotiable Rules
+- Never commit private chat content or derived private datasets.
+- Keep these out of git: `data/raw/*`, `data/sft/*`, `checkpoints_lora/*`.
+- Bridge/send actions must be explicit; dry-run first.
+- Do not delete/overwrite user checkpoints unless explicitly requested.
 
-## Main Commands (keep stable)
-- `python -m chatbot.ops archive`
-- `python -m chatbot.ops organize`
-- `python -m chatbot.ops preprocess`
-- `python -m chatbot.ops train`
-- `python -m chatbot.ops smoke`
-- `python -m chatbot.ops reply "..."`
-- `python -m chatbot.ops chat`
-- `python -m chatbot.ops bridge --dry`
-
-## Current Training Design (v2)
-- Run name default: `room_v2_context`
-- Preprocess mode: `context_windows`
-- Multi-turn context samples from `configs/paths.yaml > processed.preprocess`
-- Loss mode: `response_only`
-- Preprocess generates aligned masks:
-  - `train_loss_mask.bin`
-  - `val_loss_mask.bin`
-- Trainer applies masked CE over response tokens only.
+## Primary Commands
+- `python -m chatbot.sft_ops archive`
+- `python -m chatbot.sft_ops organize`
+- `python -m chatbot.sft_ops preprocess`
+- `python -m chatbot.sft_ops train`
+- `python -m chatbot.sft_ops reply "..."`
+- `python -m chatbot.sft_ops chat`
+- `python -m chatbot.sft_ops smoke`
 
 ## Key Files
-- Preprocess: `src/chatbot/preprocess.py`
-- Trainer: `src/chatbot/train.py`
-- Inference: `src/chatbot/inference.py`
-- Ops CLI: `src/chatbot/ops.py`
-- Archive utility: `src/chatbot/archive_state.py`
-- Smoke test: `src/chatbot/smoke.py`
+- SFT config: `configs/sft.yaml`
+- SFT preprocess: `src/chatbot/sft_preprocess.py`
+- SFT training: `src/chatbot/sft_train.py`
+- SFT inference engine: `src/chatbot/sft_infer.py`
+- Chat CLI: `src/chatbot/sft_chat.py`
+- Smoke: `src/chatbot/sft_smoke.py`
+- Unified entrypoint: `src/chatbot/sft_ops.py`
 
-## Config Ownership
-- `configs/paths.yaml`: raw/processed paths + preprocess constants
-- `configs/train.yaml`: model/optimization/objective constants
-- `configs/gen.yaml`: inference/dialogue/output/smoke/security constants
+## Pipeline Summary
+1. Parse/clean Kakao txt logs.
+2. Build context->response SFT JSONL (`train.jsonl`, `val.jsonl`).
+3. Fine-tune LoRA adapter on pretrained base model.
+4. Auto-resume from latest checkpoint.
+5. Keep `adapter_best` and `adapter_latest` for inference.
 
-Rule: prefer config constants edits over adding CLI knobs.
+## Resume/Stop Behavior
+- Resume source: `checkpoints_lora/<run_name>/checkpoint-*`.
+- Stop by `Ctrl+C` or `STOP` file in run dir.
+- Training writes `status.json` with best/latest adapter paths.
 
-## Resume Behavior
-- Auto-resume from `checkpoints/<run_name>/latest.pt`
-- Stop via Ctrl+C or STOP file
-- Keep `latest.pt`, `best.pt`, snapshots
-- Resume safety checks for model/tokenizer compatibility remain enabled
-
-## Minimal Validation
+## Validation Checklist
 ```bash
 python -m compileall src
-python -m chatbot.ops preprocess
-python -m chatbot.ops train
-python -m chatbot.ops smoke
-python -m chatbot.ops reply "테스트"
+python -m chatbot.sft_ops preprocess
+python -m chatbot.sft_ops train
+python -m chatbot.sft_ops smoke
+python -m chatbot.sft_ops reply "테스트"
 ```
+
+## Change Principles
+- Keep `configs/sft.yaml` as single source of training constants.
+- Prefer practical quality improvements (data filtering, context design, decoding stability) over cosmetic refactors.
+- Maintain one-line, low-friction command UX.

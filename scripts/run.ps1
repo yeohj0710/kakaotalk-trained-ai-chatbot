@@ -33,5 +33,5 @@ if ($LASTEXITCODE -ne 0) {
   & $pythonExe -m pip install -e .
 }
 
-& $pythonExe -m chatbot.ops $Command @Args
+& $pythonExe -m chatbot.sft_ops $Command @Args
 exit $LASTEXITCODE
