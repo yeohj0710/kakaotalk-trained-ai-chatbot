@@ -1,10 +1,15 @@
-﻿# PORTABLE_STATE.txt
-Single Source of Truth for resuming this project on another machine.
+# PORTABLE_STATE.txt
+Single Source of Truth for moving/resuming this project on another machine.
+
+[Latest detailed handoff]
+- See: RUNBOOK_TOMORROW_2026-02-26.md
+- Includes exact terminal-by-terminal startup, tunnel, Vercel env, and troubleshooting.
 
 [Current Architecture]
-- Pretrained base model + LoRA SFT
-- Run name default: room_lora_qwen3b
+- Base model: Qwen/Qwen2.5-3B
+- Training: 2-stage LoRA (CPT -> SFT)
 - Main config: configs/sft.yaml
+- Default run: room_lora_qwen25_3b_base
 
 [Required for training resume]
 1) Code + config
@@ -15,35 +20,42 @@ Single Source of Truth for resuming this project on another machine.
 - data/raw/inbox/*.txt
 - data/sft/train.jsonl
 - data/sft/val.jsonl
+- data/sft/cpt_train.jsonl
+- data/sft/cpt_val.jsonl
 - data/sft/stats.json
 
 3) Checkpoints
+- checkpoints_lora/<run_name>_cpt/checkpoint-*
 - checkpoints_lora/<run_name>/checkpoint-*
 - checkpoints_lora/<run_name>/adapter_latest
 - checkpoints_lora/<run_name>/adapter_best
-- checkpoints_lora/<run_name>/status.json
 
 [Required for inference only]
 - configs/sft.yaml
 - .env
-- checkpoints_lora/<run_name>/adapter_best (or adapter_latest)
+- checkpoints_lora/<run_name>/adapter_best (or latest checkpoint dir)
 
 [Environment variables]
 - CHATBOT_PASSWORD=...
 
 [One-line commands]
-- Archive old outputs: python -m chatbot.sft_ops archive
 - Organize raw txt:   python -m chatbot.sft_ops organize
 - Preprocess:         python -m chatbot.sft_ops preprocess
 - Train/resume:       python -m chatbot.sft_ops train
 - Reply:              python -m chatbot.sft_ops reply "테스트"
 - Chat:               python -m chatbot.sft_ops chat
 - Smoke test:         python -m chatbot.sft_ops smoke
+- API server:         python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000
 
 [Resume behavior]
 - Stop: Ctrl+C or STOP file in run dir
-- Resume: same `train` command; auto resumes from latest checkpoint
+- Resume: same train command
+- Pipeline order: CPT complete -> SFT
 
-[Practical note]
+[Checkpoint policy]
+- save_steps: 500 (frequent checkpoint for quick testing)
+- eval_steps: CPT=8000, SFT=5000 (infrequent eval for speed)
+
+[Practical notes]
 - First run downloads base model from Hugging Face.
-- If 4bit quantization is unavailable, loader may fallback and use more VRAM.
+- If bitsandbytes is unavailable, 4bit may fallback to full precision (slower, more VRAM).

@@ -40,6 +40,48 @@ def sanitize_text(text: str, one_line: bool, max_chars: int) -> str:
     return out
 
 
+def strip_generation_artifacts(text: str) -> str:
+    out = (text or "").strip()
+    if not out:
+        return ""
+
+    # If the model repeats the prompt scaffold, keep only the trailing answer span.
+    if "[ANSWER]" in out:
+        out = out.rsplit("[ANSWER]", 1)[-1].strip()
+
+    # Remove obvious meta/prompt markers.
+    for marker in ("[SYSTEM]", "[TASK]", "[DIALOGUE]", "[ANSWER]"):
+        idx = out.find(marker)
+        if idx == 0:
+            out = out[len(marker) :].strip()
+        elif idx > 0:
+            out = out[:idx].strip()
+
+    # Cut if the model starts writing next turn/prefix labels.
+    for marker in ("사용자:", "assistant:", "user:", "[USER]", "[ASSISTANT]"):
+        idx = out.find(marker)
+        if idx > 0:
+            out = out[:idx].strip()
+
+    # Strip leading labels that occasionally appear in chat data or prompt echoes.
+    prefixes = (
+        "답변:",
+        "대화:",
+        "출력:",
+        "assistant:",
+        "봇:",
+        "AI:",
+    )
+    changed = True
+    while changed and out:
+        changed = False
+        for prefix in prefixes:
+            if out.lower().startswith(prefix.lower()):
+                out = out[len(prefix) :].strip()
+                changed = True
+    return out
+
+
 def resolve_torch_dtype(name: str) -> torch.dtype:
     normalized = str(name).strip().lower()
     if normalized in {"bf16", "bfloat16"}:
@@ -71,6 +113,25 @@ def retry_hf_load(fn, attempts: int = 4, base_wait_sec: float = 3.0):
             time.sleep(wait_sec)
     if last_error is not None:
         raise last_error
+
+
+def find_latest_checkpoint_dir(run_dir: Path) -> Path | None:
+    candidates: list[tuple[int, Path]] = []
+    for path in run_dir.glob("checkpoint-*"):
+        if not path.is_dir():
+            continue
+        suffix = path.name.removeprefix("checkpoint-")
+        if not suffix.isdigit():
+            continue
+        if not (path / "adapter_config.json").exists():
+            continue
+        if not (path / "adapter_model.safetensors").exists():
+            continue
+        candidates.append((int(suffix), path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def resolve_4bit_config(model_cfg: dict[str, Any], dtype: torch.dtype) -> Any | None:
@@ -109,6 +170,7 @@ class SFTInferOptions:
     regen_attempts: int
     one_line: bool
     max_chars: int
+    use_chat_template: bool
 
 
 class SFTInferenceEngine:
@@ -117,12 +179,14 @@ class SFTInferenceEngine:
         model: Any,
         tokenizer: Any,
         system_prompt: str,
+        task_prompt: str,
         options: SFTInferOptions,
         adapter_dir: Path,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.system_prompt = system_prompt
+        self.task_prompt = task_prompt
         self.options = options
         self.adapter_dir = adapter_dir
 
@@ -142,7 +206,7 @@ class SFTInferenceEngine:
         gen_cfg = dict(cfg.get("generation", {}))
         prompt_cfg = dict(cfg.get("prompt", {}))
 
-        run_name = run_name_override or str(project_cfg.get("run_name", "room_lora_qwen3b"))
+        run_name = run_name_override or str(project_cfg.get("run_name", "room_lora_qwen25_3b_base"))
         checkpoints_root = Path(str(paths_cfg.get("checkpoints_root", "checkpoints_lora")))
         run_dir = checkpoints_root / run_name
         status_json = Path(format_with_run_name(str(paths_cfg.get("status_json", "checkpoints_lora/{run_name}/status.json")), run_name))
@@ -164,13 +228,38 @@ class SFTInferenceEngine:
                 elif latest_from_status and Path(latest_from_status).exists():
                     resolved_adapter = Path(latest_from_status)
         if resolved_adapter is None or not resolved_adapter.exists():
+            checkpoint_fallback = find_latest_checkpoint_dir(run_dir)
+            if checkpoint_fallback is not None:
+                resolved_adapter = checkpoint_fallback
+                print(
+                    json.dumps(
+                        {
+                            "event": "adapter_fallback_checkpoint",
+                            "adapter_dir": str(resolved_adapter.as_posix()),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+        if resolved_adapter is None or not resolved_adapter.exists():
             raise FileNotFoundError("No adapter checkpoint found. Train first.")
 
-        base_model = str(model_cfg.get("base_model", "Qwen/Qwen2.5-3B-Instruct")).strip()
+        base_model = str(model_cfg.get("base_model", "Qwen/Qwen2.5-3B")).strip()
         trust_remote_code = bool(model_cfg.get("trust_remote_code", True))
         local_files_only = bool(model_cfg.get("local_files_only", False))
         dtype = resolve_torch_dtype(str(model_cfg.get("torch_dtype", "bfloat16")))
         quant_config = resolve_4bit_config(model_cfg=model_cfg, dtype=dtype)
+        if bool(model_cfg.get("load_in_4bit", True)) and quant_config is None:
+            print(
+                json.dumps(
+                    {
+                        "event": "quantization_warning",
+                        "requested_4bit": True,
+                        "quantization": "fallback_full_precision",
+                        "hint": "Install bitsandbytes for 4bit or keep full precision fallback.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
         tokenizer = retry_hf_load(
             lambda: AutoTokenizer.from_pretrained(
@@ -185,7 +274,7 @@ class SFTInferenceEngine:
 
         model_kwargs: dict[str, Any] = {
             "trust_remote_code": trust_remote_code,
-            "dtype": dtype,
+            "torch_dtype": dtype,
             "local_files_only": local_files_only,
         }
         if quant_config is not None:
@@ -198,47 +287,59 @@ class SFTInferenceEngine:
         model.eval()
 
         options = SFTInferOptions(
-            max_new_tokens=int(gen_cfg.get("max_new_tokens", 120)),
+            max_new_tokens=int(gen_cfg.get("max_new_tokens", 96)),
             do_sample=bool(gen_cfg.get("do_sample", True)),
-            temperature=float(gen_cfg.get("temperature", 0.72)),
-            top_p=float(gen_cfg.get("top_p", 0.9)),
-            top_k=int(gen_cfg.get("top_k", 40)),
-            repetition_penalty=float(gen_cfg.get("repetition_penalty", 1.08)),
-            max_history_turns=max(1, int(gen_cfg.get("max_history_turns", 14))),
+            temperature=float(gen_cfg.get("temperature", 0.85)),
+            top_p=float(gen_cfg.get("top_p", 0.92)),
+            top_k=int(gen_cfg.get("top_k", 50)),
+            repetition_penalty=float(gen_cfg.get("repetition_penalty", 1.05)),
+            max_history_turns=max(1, int(gen_cfg.get("max_history_turns", 16))),
             min_reply_chars=max(1, int(gen_cfg.get("min_reply_chars", 8))),
             regen_attempts=max(0, int(gen_cfg.get("regen_attempts", 2))),
             one_line=bool(gen_cfg.get("one_line", True)),
-            max_chars=max(1, int(gen_cfg.get("max_chars", 240))),
+            max_chars=max(1, int(gen_cfg.get("max_chars", 220))),
+            use_chat_template=bool(gen_cfg.get("use_chat_template", False)),
         )
         system_prompt = str(prompt_cfg.get("system", "")).strip()
+        task_prompt = str(prompt_cfg.get("task", "")).strip()
         return cls(
             model=model,
             tokenizer=tokenizer,
             system_prompt=system_prompt,
+            task_prompt=task_prompt,
             options=options,
             adapter_dir=resolved_adapter,
         )
 
-    def _build_prompt(self, history: list[tuple[str, str]], new_user_input: str) -> str:
-        messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
-        tail = history[-(self.options.max_history_turns * 2) :]
-        for role, text in tail:
-            if role == "bot":
-                messages.append({"role": "assistant", "content": text})
-            else:
-                messages.append({"role": "user", "content": text})
-        messages.append({"role": "user", "content": new_user_input})
+    def _context_text(self, text: str) -> str:
+        out = sanitize_text(text, one_line=True, max_chars=0)
+        return out[:700].strip()
 
-        if hasattr(self.tokenizer, "apply_chat_template"):
+    def _build_prompt(self, history: list[tuple[str, str]], new_user_input: str) -> str:
+        if self.options.use_chat_template and hasattr(self.tokenizer, "apply_chat_template"):
+            messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
+            tail = history[-(self.options.max_history_turns * 2) :]
+            for role, text in tail:
+                if role == "bot":
+                    messages.append({"role": "assistant", "content": text})
+                else:
+                    messages.append({"role": "user", "content": text})
+            messages.append({"role": "user", "content": new_user_input})
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        # Fallback template
-        chunks = [f"[SYSTEM]\n{self.system_prompt}\n"]
-        for msg in messages[1:]:
-            role = "USER" if msg["role"] == "user" else "ASSISTANT"
-            chunks.append(f"\n[{role}]\n{msg['content']}\n")
-        chunks.append("\n[ASSISTANT]\n")
-        return "".join(chunks)
+        tail = history[-(self.options.max_history_turns * 2) :]
+        lines: list[str] = []
+        for role, text in tail:
+            speaker = "봇" if role == "bot" else "사용자"
+            lines.append(f"{speaker}: {self._context_text(text)}")
+        lines.append(f"사용자: {self._context_text(new_user_input)}")
+        context_text = "\n".join(lines)
+        return (
+            f"[SYSTEM]\n{self.system_prompt}\n\n"
+            f"[TASK]\n{self.task_prompt}\n\n"
+            f"[DIALOGUE]\n{context_text}\n\n"
+            "[ANSWER]\n"
+        )
 
     def _generate_once(self, prompt: str) -> str:
         inputs = self.tokenizer(prompt, return_tensors="pt")
@@ -259,7 +360,8 @@ class SFTInferenceEngine:
         prompt_len = inputs["input_ids"].shape[1]
         generated_ids = output[0][prompt_len:]
         raw = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-        return sanitize_text(raw, one_line=self.options.one_line, max_chars=self.options.max_chars)
+        cleaned = sanitize_text(raw, one_line=self.options.one_line, max_chars=self.options.max_chars)
+        return strip_generation_artifacts(cleaned)
 
     def reply(self, history: list[tuple[str, str]], user_text: str) -> str:
         prompt = self._build_prompt(history=history, new_user_input=user_text)

@@ -1,53 +1,53 @@
-﻿# kakaotalk-trained-ai-chatbot (LoRA SFT)
+# kakaotalk-trained-ai-chatbot (CPT + SFT LoRA)
 
-이 프로젝트는 카카오톡 대화 로그를 이용해 **사전학습 LLM(Qwen 계열)**에 LoRA 추가학습을 수행하는 파이프라인입니다.
+카카오톡 대화 로그를 기반으로, **베이스 LLM(Qwen2.5-3B)**에 2단계로 학습합니다.
 
-목표:
-- from-scratch가 아니라, 이미 언어능력이 있는 모델에 톡방 말투/반응을 특화
-- 실행은 최대한 단순하게
-- 중단/재개/최적 체크포인트(best) 운영
+- 1단계: **CPT** (raw 대화 흐름 next-token 학습)
+- 2단계: **SFT** (문맥 -> 다음 답변 학습)
+
+목표는 톡방 말투/리듬을 최대한 반영한 대화형 모델입니다.
 
 ## 1) 설치 (Git Bash)
 ```bash
 cd /c/dev/kakaotalk-trained-ai-chatbot
 python -m venv .venv
 source .venv/Scripts/activate
-pip install -r requirements.txt
-pip install -e .
+python -m pip install -r requirements.txt
+python -m pip install -e .
 cp .env.example .env
 ```
 
 `.env` 필수:
 - `CHATBOT_PASSWORD=...`
 
-## 2) 기본 실행 순서
+## 2) 기본 실행
 ```bash
-python -m chatbot.sft_ops archive
 python -m chatbot.sft_ops organize
 python -m chatbot.sft_ops preprocess
 python -m chatbot.sft_ops train
 ```
 
-또는 스크립트:
-```bash
-./scripts/run.sh preprocess
-./scripts/run.sh train
-```
+`train`은 자동으로:
+1. CPT 단계 실행/재개
+2. CPT 완료 시 SFT 단계 실행/재개
 
-PowerShell:
-```powershell
-.\scripts\run.ps1 preprocess
-.\scripts\run.ps1 train
-```
-
-## 3) 중단/재개
+## 3) 학습 중단/재개
 - 중단: `Ctrl+C`
-- 재개: 다시 `python -m chatbot.sft_ops train`
-- STOP 파일 방식: `checkpoints_lora/<run_name>/STOP`
+- 재개: 동일 명령 재실행
+```bash
+python -m chatbot.sft_ops train
+```
+- STOP 파일: `checkpoints_lora/<run_name>/STOP`
 
-자동 재개는 `checkpoints_lora/<run_name>/checkpoint-*`에서 수행됩니다.
+## 4) 체크포인트 정책 (기본)
+- 저장(save): **자주** (`save_steps: 500`)
+- 검증(eval): **드물게**  
+  - CPT: `eval_steps: 8000`
+  - SFT: `eval_steps: 5000`
 
-## 4) 추론/테스트
+즉, 테스트용 모델은 자주 갱신되고 검증 오버헤드는 줄어듭니다.
+
+## 5) 테스트
 단발:
 ```bash
 python -m chatbot.sft_ops reply "오늘 뭐함"
@@ -58,43 +58,33 @@ python -m chatbot.sft_ops reply "오늘 뭐함"
 python -m chatbot.sft_ops chat
 ```
 
-스모크(고정 3턴):
+최신 체크포인트로 명시 테스트:
 ```bash
-python -m chatbot.sft_ops smoke
+LATEST="$(ls -d checkpoints_lora/room_lora_qwen25_3b_base/checkpoint-* 2>/dev/null | sort -V | tail -1)"
+python -m chatbot.sft_ops chat --adapter "$LATEST"
 ```
 
-## 5) 체크포인트 구조
-- 학습 체크포인트: `checkpoints_lora/<run_name>/checkpoint-*`
-- 최신 어댑터: `checkpoints_lora/<run_name>/adapter_latest`
-- 최고 어댑터: `checkpoints_lora/<run_name>/adapter_best`
-- 상태 파일: `checkpoints_lora/<run_name>/status.json`
+로컬 HTTP API 서버(웹 연동용):
+```bash
+python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000 --config_sft configs/sft.yaml --env_path .env
+```
 
-추론은 기본적으로 `adapter_best`를 우선 사용합니다.
-
-## 6) 핵심 설정 파일 (상수 기반)
-- `configs/sft.yaml` 하나로 관리
+## 6) 핵심 설정 파일
+- `configs/sft.yaml` (상수 기반 단일 설정)
 
 중요 항목:
-- `model.base_model`: 베이스 LLM
-- `data.context_turns`, `data.min_target_chars`, `data.drop_low_signal`
-- `training.max_steps`, `training.learning_rate`, `training.eval_steps/save_steps`
-- `generation.temperature/top_p/top_k/repetition_penalty`
+- `model.base_model`
+- `pipeline.*` (CPT -> SFT 흐름)
+- `cpt_training.*`, `training.*` (저장/검증 주기 포함)
+- `generation.*`
 
-요청사항대로, 기본 사용 시 CLI 인자로 하이퍼파라미터를 바꾸지 않습니다.
-
-## 7) 품질 관련 현실적 포인트
-- 성능은 **데이터 품질 + 베이스모델 품질** 영향이 큽니다.
-- 너무 짧은 답이 많으면 `data.min_target_chars`를 올리세요.
-- 말이 깨지면 `generation.temperature`를 낮추고 `top_k/top_p`를 보수적으로 조정하세요.
-
-## 8) 보안
-- `CHATBOT_PASSWORD` 없으면 추론/채팅 실행 차단
-- 민감 데이터는 기본적으로 gitignore 대상:
+## 7) 보안/민감데이터
+- 비밀번호 게이트: `CHATBOT_PASSWORD`
+- git 커밋 금지 대상:
   - `data/raw/*`
   - `data/sft/*`
   - `checkpoints_lora/*`
 
-## 9) 주의
-- 처음 학습 시 베이스 모델 다운로드가 필요합니다(Hugging Face).
-- GPU/VRAM 상황에 따라 `model.load_in_4bit`가 실패하면 자동으로 비양자화 로딩으로 폴백될 수 있습니다.
-  - 이 경우 VRAM 사용량이 크게 증가합니다.
+## 8) 참고
+- `load_in_4bit=true`인데 `bitsandbytes`가 없으면 full-precision 폴백될 수 있습니다.
+- 이 경우 속도/VRAM 사용량이 크게 늘 수 있습니다.

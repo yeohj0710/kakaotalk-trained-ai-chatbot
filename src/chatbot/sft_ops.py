@@ -45,7 +45,7 @@ def cmd_preprocess(args: argparse.Namespace) -> int:
 
 
 def cmd_train(args: argparse.Namespace) -> int:
-    return _run_module("chatbot.sft_train", ["--config_sft", args.config_sft, "--env_path", args.env_path])
+    return _run_module("chatbot.sft_train_pipeline", ["--config_sft", args.config_sft, "--env_path", args.env_path])
 
 
 def cmd_reply(args: argparse.Namespace) -> int:
@@ -100,6 +100,24 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     return _run_module("chatbot.sft_smoke", module_args)
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    module_args = [
+        "--host",
+        args.host,
+        "--port",
+        str(args.port),
+        "--config_sft",
+        args.config_sft,
+        "--env_path",
+        args.env_path,
+    ]
+    if args.adapter:
+        module_args.extend(["--adapter", args.adapter])
+    if args.run_name:
+        module_args.extend(["--run_name", args.run_name])
+    return _run_module("chatbot.web_api", module_args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified CLI for SFT/LoRA chatbot pipeline.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -148,6 +166,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_smoke.add_argument("--run_name", default="")
     p_smoke.add_argument("--password", default="")
     p_smoke.set_defaults(func=cmd_smoke)
+
+    p_serve = sub.add_parser("serve")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--config_sft", default="configs/sft.yaml")
+    p_serve.add_argument("--env_path", default=".env")
+    p_serve.add_argument("--adapter", default="")
+    p_serve.add_argument("--run_name", default="")
+    p_serve.set_defaults(func=cmd_serve)
     return parser
 
 

@@ -64,7 +64,7 @@ def main() -> None:
     data_cfg = dict(cfg.get("data", {}))
     prompt_cfg = dict(cfg.get("prompt", {}))
 
-    run_name = str(project_cfg.get("run_name", "room_lora_qwen3b")).strip() or "room_lora_qwen3b"
+    run_name = str(project_cfg.get("run_name", "room_lora_qwen25_3b_base")).strip() or "room_lora_qwen25_3b_base"
     seed = int(project_cfg.get("seed", 42))
     random.seed(seed)
 
@@ -72,6 +72,8 @@ def main() -> None:
     output_dir = Path(format_with_run_name(str(paths_cfg.get("output_dir", "data/sft")), run_name=run_name))
     train_jsonl = Path(format_with_run_name(str(paths_cfg.get("train_jsonl", output_dir / "train.jsonl")), run_name))
     val_jsonl = Path(format_with_run_name(str(paths_cfg.get("val_jsonl", output_dir / "val.jsonl")), run_name))
+    cpt_train_jsonl = Path(format_with_run_name(str(paths_cfg.get("cpt_train_jsonl", output_dir / "cpt_train.jsonl")), run_name))
+    cpt_val_jsonl = Path(format_with_run_name(str(paths_cfg.get("cpt_val_jsonl", output_dir / "cpt_val.jsonl")), run_name))
     preview_json = Path(format_with_run_name(str(paths_cfg.get("preview_json", output_dir / "preview.json")), run_name))
     stats_json = Path(format_with_run_name(str(paths_cfg.get("stats_json", output_dir / "stats.json")), run_name))
 
@@ -94,6 +96,13 @@ def main() -> None:
     drop_media_only = bool(data_cfg.get("drop_media_only", True))
     max_examples_per_split = int(data_cfg.get("max_examples_per_split", 0))
     response_one_line = bool(prompt_cfg.get("response_one_line", True))
+    cpt_cfg = dict(cfg.get("cpt_data", {}))
+    cpt_window_messages = max(2, int(cpt_cfg.get("window_messages", 64)))
+    cpt_stride_messages = max(1, int(cpt_cfg.get("stride_messages", 16)))
+    cpt_min_messages = max(2, int(cpt_cfg.get("min_messages", 10)))
+    cpt_min_chars = max(10, int(cpt_cfg.get("min_chars", 120)))
+    cpt_max_chars = max(50, int(cpt_cfg.get("max_chars", 2200)))
+    cpt_use_speaker_prefix = bool(cpt_cfg.get("use_speaker_prefix", True))
 
     system_prompt = str(prompt_cfg.get("system", "")).strip()
     task_prompt = str(prompt_cfg.get("task", "")).strip()
@@ -225,13 +234,61 @@ def main() -> None:
     if not train_rows or not val_rows:
         raise RuntimeError("No train/val examples generated. Relax filters.")
 
+    def build_cpt_rows(split_sessions: list[Any], split_name: str) -> tuple[list[dict[str, Any]], Counter]:
+        rows: list[dict[str, Any]] = []
+        local_drop = Counter()
+        for session in split_sessions:
+            msgs = session.messages
+            if len(msgs) < cpt_min_messages:
+                local_drop["short_session"] += 1
+                continue
+
+            for start_idx in range(0, len(msgs), cpt_stride_messages):
+                chunk = msgs[start_idx : start_idx + cpt_window_messages]
+                if len(chunk) < cpt_min_messages:
+                    continue
+                if cpt_use_speaker_prefix:
+                    text = "\n".join(f"{msg.speaker}: {one_line(msg.text)}" for msg in chunk)
+                else:
+                    text = "\n".join(one_line(msg.text) for msg in chunk)
+                text = text.strip()
+                if len(text) > cpt_max_chars:
+                    text = text[:cpt_max_chars].rstrip()
+                if compact_length(text) < cpt_min_chars:
+                    local_drop["short_chunk"] += 1
+                    continue
+                rows.append(
+                    {
+                        "text": text,
+                        "meta": {
+                            "split": split_name,
+                            "source_file": chunk[-1].source_file,
+                            "start_timestamp": chunk[0].timestamp.isoformat(timespec="minutes"),
+                            "end_timestamp": chunk[-1].timestamp.isoformat(timespec="minutes"),
+                            "message_count": len(chunk),
+                        },
+                    }
+                )
+                if max_examples_per_split > 0 and len(rows) >= max_examples_per_split:
+                    return rows, local_drop
+        return rows, local_drop
+
+    cpt_train_rows, cpt_train_drop = build_cpt_rows(train_sessions, "train")
+    cpt_val_rows, cpt_val_drop = build_cpt_rows(val_sessions, "val")
+    if not cpt_train_rows or not cpt_val_rows:
+        raise RuntimeError("No CPT train/val examples generated. Relax cpt_data filters.")
+
     write_jsonl(train_jsonl, train_rows)
     write_jsonl(val_jsonl, val_rows)
+    write_jsonl(cpt_train_jsonl, cpt_train_rows)
+    write_jsonl(cpt_val_jsonl, cpt_val_rows)
 
     preview_payload = {
         "run_name": run_name,
         "train_samples": train_rows[:3],
         "val_samples": val_rows[:2],
+        "cpt_train_samples": cpt_train_rows[:2],
+        "cpt_val_samples": cpt_val_rows[:1],
     }
     preview_json.parent.mkdir(parents=True, exist_ok=True)
     preview_json.write_text(json.dumps(preview_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -248,10 +305,15 @@ def main() -> None:
         "val_sessions": len(val_sessions),
         "train_examples": len(train_rows),
         "val_examples": len(val_rows),
+        "cpt_train_examples": len(cpt_train_rows),
+        "cpt_val_examples": len(cpt_val_rows),
         "drop_reasons_global": dict(drop_reasons),
         "drop_reasons_train": dict(train_drop),
         "drop_reasons_val": dict(val_drop),
+        "drop_reasons_cpt_train": dict(cpt_train_drop),
+        "drop_reasons_cpt_val": dict(cpt_val_drop),
         "data_config": data_cfg,
+        "cpt_data_config": cpt_cfg,
     }
     stats_json.parent.mkdir(parents=True, exist_ok=True)
     stats_json.write_text(json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -263,8 +325,12 @@ def main() -> None:
                 "run_name": run_name,
                 "train_jsonl": str(train_jsonl.as_posix()),
                 "val_jsonl": str(val_jsonl.as_posix()),
+                "cpt_train_jsonl": str(cpt_train_jsonl.as_posix()),
+                "cpt_val_jsonl": str(cpt_val_jsonl.as_posix()),
                 "train_examples": len(train_rows),
                 "val_examples": len(val_rows),
+                "cpt_train_examples": len(cpt_train_rows),
+                "cpt_val_examples": len(cpt_val_rows),
             },
             ensure_ascii=False,
         )

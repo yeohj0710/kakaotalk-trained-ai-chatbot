@@ -83,52 +83,27 @@ def sanitize_line(text: str) -> str:
     return out
 
 
-def one_line(text: str) -> str:
-    out = sanitize_line(text)
-    out = " ".join(part for part in out.splitlines() if part.strip())
-    out = " ".join(out.split())
-    return out.strip()
-
-
 @dataclass
 class TokenizeConfig:
     max_seq_len: int
-    one_line_response: bool
 
 
 def build_tokenize_fn(tokenizer: PreTrainedTokenizerBase, cfg: TokenizeConfig):
     eos_id = tokenizer.eos_token_id
     if eos_id is None:
         raise ValueError("Tokenizer must provide eos_token_id.")
+    max_seq_len = max(8, cfg.max_seq_len)
 
     def _tokenize_row(row: dict[str, Any]) -> dict[str, Any]:
-        prompt = sanitize_line(str(row["prompt"]))
-        response = str(row["response"])
-        if cfg.one_line_response:
-            response = one_line(response)
-        else:
-            response = sanitize_line(response)
-
-        prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
-        response_ids = tokenizer(response, add_special_tokens=False).input_ids + [eos_id]
-
-        # Preserve response span first, trim prompt from the left if needed.
-        if len(response_ids) >= cfg.max_seq_len:
-            response_ids = response_ids[-cfg.max_seq_len :]
-            prompt_ids = []
-        else:
-            max_prompt = cfg.max_seq_len - len(response_ids)
-            if len(prompt_ids) > max_prompt:
-                prompt_ids = prompt_ids[-max_prompt:]
-
-        input_ids = prompt_ids + response_ids
-        labels = ([-100] * len(prompt_ids)) + response_ids
+        text = sanitize_line(str(row["text"]))
+        ids = tokenizer(text, add_special_tokens=False).input_ids
+        if not ids:
+            ids = [eos_id]
+        if len(ids) >= max_seq_len:
+            ids = ids[-(max_seq_len - 1) :]
+        input_ids = ids + [eos_id]
+        labels = list(input_ids)
         attention_mask = [1] * len(input_ids)
-
-        if not any(label != -100 for label in labels):
-            # Hard fallback: at least learn on the final token.
-            labels[-1] = input_ids[-1]
-
         return {
             "input_ids": input_ids,
             "labels": labels,
@@ -138,7 +113,7 @@ def build_tokenize_fn(tokenizer: PreTrainedTokenizerBase, cfg: TokenizeConfig):
     return _tokenize_row
 
 
-class SFTDataCollator:
+class LMDataCollator:
     def __init__(self, tokenizer: PreTrainedTokenizerBase) -> None:
         self.tokenizer = tokenizer
         if tokenizer.pad_token_id is None:
@@ -278,11 +253,10 @@ def prepare_model_and_tokenizer(cfg: dict[str, Any], init_adapter_path: str = ""
 
     if quant_config is not None:
         model = prepare_model_for_kbit_training(model)
-    else:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()  # type: ignore[operator]
+    elif hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()  # type: ignore[operator]
 
-    if bool(model_cfg.get("gradient_checkpointing", True)):
+    if bool(model_cfg.get("gradient_checkpointing", False)):
         model.gradient_checkpointing_enable()
         model.config.use_cache = False
 
@@ -290,7 +264,7 @@ def prepare_model_and_tokenizer(cfg: dict[str, Any], init_adapter_path: str = ""
     if init_adapter:
         init_path = Path(init_adapter)
         if not init_path.exists():
-            raise FileNotFoundError(f"Init adapter path not found: {init_adapter}")
+            raise FileNotFoundError(f"CPT init adapter path not found: {init_adapter}")
         model = PeftModel.from_pretrained(model, str(init_path), is_trainable=True)
         init_mode = "from_adapter"
     else:
@@ -298,14 +272,15 @@ def prepare_model_and_tokenizer(cfg: dict[str, Any], init_adapter_path: str = ""
         peft_task_type = TaskType.CAUSAL_LM if task_type == "CAUSAL_LM" else TaskType.CAUSAL_LM
         peft_cfg = LoraConfig(
             task_type=peft_task_type,
-            r=int(lora_cfg.get("r", 64)),
-            lora_alpha=int(lora_cfg.get("alpha", 128)),
+            r=int(lora_cfg.get("r", 32)),
+            lora_alpha=int(lora_cfg.get("alpha", 64)),
             lora_dropout=float(lora_cfg.get("dropout", 0.05)),
             bias=str(lora_cfg.get("bias", "none")),
             target_modules=list(lora_cfg.get("target_modules", [])),
         )
         model = get_peft_model(model, peft_cfg)
         init_mode = "fresh_lora"
+
     try:
         model.print_trainable_parameters()
     except Exception:
@@ -327,7 +302,7 @@ def copy_checkpoint_dir(src: Path, dst: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train LoRA adapter on SFT chat dataset with auto-resume.")
+    parser = argparse.ArgumentParser(description="Stage-1 CPT (continued pretraining) for LoRA adapter.")
     parser.add_argument("--config_sft", default="configs/sft.yaml")
     parser.add_argument("--env_path", default=".env")
     parser.add_argument("--run_name", default="")
@@ -337,10 +312,9 @@ def main() -> None:
     cfg = load_sft_config(config_path=args.config_sft, env_path=args.env_path)
     project_cfg = dict(cfg.get("project", {}))
     paths_cfg = dict(cfg.get("paths", {}))
-    train_cfg = dict(cfg.get("training", {}))
-    prompt_cfg = dict(cfg.get("prompt", {}))
+    train_cfg = dict(cfg.get("cpt_training", {}))
 
-    run_name = (args.run_name or str(project_cfg.get("run_name", "room_lora_qwen25_3b_base"))).strip() or "room_lora_qwen25_3b_base"
+    run_name = (args.run_name or str(project_cfg.get("run_name", "room_lora_qwen25_3b_base"))).strip()
     seed = int(project_cfg.get("seed", 42))
     ensure_hf_env_defaults()
     set_seed(seed)
@@ -352,50 +326,41 @@ def main() -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     stop_file = run_dir / str(paths_cfg.get("stop_file_name", "STOP"))
 
-    train_jsonl = Path(format_with_run_name(str(paths_cfg.get("train_jsonl", "data/sft/train.jsonl")), run_name))
-    val_jsonl = Path(format_with_run_name(str(paths_cfg.get("val_jsonl", "data/sft/val.jsonl")), run_name))
+    train_jsonl = Path(format_with_run_name(str(paths_cfg.get("cpt_train_jsonl", "data/sft/cpt_train.jsonl")), run_name))
+    val_jsonl = Path(format_with_run_name(str(paths_cfg.get("cpt_val_jsonl", "data/sft/cpt_val.jsonl")), run_name))
     status_json = Path(format_with_run_name(str(paths_cfg.get("status_json", "checkpoints_lora/{run_name}/status.json")), run_name))
-    initial_resume_ckpt = get_last_checkpoint(str(run_dir)) if run_dir.exists() else None
-    init_adapter_used = ""
-    if initial_resume_ckpt:
-        if args.init_adapter:
-            print(json.dumps({"event": "init_adapter_ignored", "reason": "resume_checkpoint_exists"}, ensure_ascii=False))
-    else:
-        init_adapter_used = str(args.init_adapter or "").strip()
 
     train_ds = load_json_dataset(train_jsonl, "train")
     val_ds = load_json_dataset(val_jsonl, "val")
     if len(train_ds) < 100:
-        raise RuntimeError("Train dataset is too small. Run preprocess with enough examples.")
+        raise RuntimeError("CPT train dataset is too small. Run preprocess with enough examples.")
     if len(val_ds) < 20:
-        raise RuntimeError("Validation dataset is too small. Increase data or lower filters.")
+        raise RuntimeError("CPT validation dataset is too small. Increase data or lower filters.")
 
-    model, tokenizer, model_meta = prepare_model_and_tokenizer(cfg, init_adapter_path=init_adapter_used)
+    model, tokenizer, model_meta = prepare_model_and_tokenizer(cfg, init_adapter_path=args.init_adapter)
     tokenize_fn = build_tokenize_fn(
         tokenizer=tokenizer,
-        cfg=TokenizeConfig(
-            max_seq_len=int(train_cfg.get("max_seq_len", 1024)),
-            one_line_response=bool(prompt_cfg.get("response_one_line", True)),
-        ),
+        cfg=TokenizeConfig(max_seq_len=int(train_cfg.get("max_seq_len", 768))),
     )
-    train_tok = train_ds.map(tokenize_fn, remove_columns=train_ds.column_names, desc="Tokenizing train")
-    val_tok = val_ds.map(tokenize_fn, remove_columns=val_ds.column_names, desc="Tokenizing val")
-    collator = SFTDataCollator(tokenizer=tokenizer)
+    train_tok = train_ds.map(tokenize_fn, remove_columns=train_ds.column_names, desc="Tokenizing CPT train")
+    val_tok = val_ds.map(tokenize_fn, remove_columns=val_ds.column_names, desc="Tokenizing CPT val")
+    collator = LMDataCollator(tokenizer=tokenizer)
 
     bf16 = bool(train_cfg.get("bf16", True)) and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     fp16 = bool(train_cfg.get("fp16", False)) and not bf16 and torch.cuda.is_available()
-    eval_steps = int(train_cfg.get("eval_steps", 500))
+    eval_steps = int(train_cfg.get("eval_steps", 5000))
     save_steps = int(train_cfg.get("save_steps", 500))
-    load_best_model_at_end = bool(train_cfg.get("load_best_model_at_end", True))
+    load_best_model_at_end = bool(train_cfg.get("load_best_model_at_end", False))
     if load_best_model_at_end and eval_steps > 0 and save_steps % eval_steps != 0:
         raise ValueError(
-            "Invalid training config: when load_best_model_at_end=true, save_steps must be a multiple of eval_steps. "
+            "Invalid CPT config: when load_best_model_at_end=true, save_steps must be a multiple of eval_steps. "
             "Set load_best_model_at_end=false to allow frequent saves with sparse eval."
         )
     print(
         json.dumps(
             {
                 "event": "train_schedule",
+                "stage": "cpt",
                 "eval_steps": eval_steps,
                 "save_steps": save_steps,
                 "load_best_model_at_end": load_best_model_at_end,
@@ -408,23 +373,23 @@ def main() -> None:
         output_dir=str(run_dir),
         per_device_train_batch_size=int(train_cfg.get("per_device_train_batch_size", 1)),
         per_device_eval_batch_size=int(train_cfg.get("per_device_eval_batch_size", 1)),
-        gradient_accumulation_steps=int(train_cfg.get("grad_accum_steps", 16)),
-        learning_rate=float(train_cfg.get("learning_rate", 2e-4)),
-        weight_decay=float(train_cfg.get("weight_decay", 0.0)),
-        warmup_ratio=float(train_cfg.get("warmup_ratio", 0.03)),
+        gradient_accumulation_steps=int(train_cfg.get("grad_accum_steps", 4)),
+        learning_rate=float(train_cfg.get("learning_rate", 1.5e-4)),
+        weight_decay=float(train_cfg.get("weight_decay", 0.01)),
+        warmup_ratio=float(train_cfg.get("warmup_ratio", 0.02)),
         lr_scheduler_type=str(train_cfg.get("lr_scheduler_type", "cosine")),
-        max_steps=int(train_cfg.get("max_steps", 300000)),
+        max_steps=int(train_cfg.get("max_steps", 30000)),
         num_train_epochs=float(train_cfg.get("num_train_epochs", 1)),
         logging_steps=int(train_cfg.get("logging_steps", 20)),
         eval_steps=eval_steps,
         save_steps=save_steps,
-        save_total_limit=int(train_cfg.get("save_total_limit", 6)),
+        save_total_limit=int(train_cfg.get("save_total_limit", 8)),
         max_grad_norm=float(train_cfg.get("max_grad_norm", 1.0)),
         dataloader_num_workers=int(train_cfg.get("dataloader_num_workers", 0)),
         bf16=bf16,
         fp16=fp16,
         tf32=bool(train_cfg.get("tf32", True)),
-        gradient_checkpointing=bool(cfg.get("model", {}).get("gradient_checkpointing", True)),
+        gradient_checkpointing=bool(cfg.get("model", {}).get("gradient_checkpointing", False)),
         eval_strategy="steps",
         save_strategy="steps",
         logging_strategy="steps",
@@ -446,6 +411,7 @@ def main() -> None:
             json.dumps(
                 {
                     "event": "early_stopping_disabled",
+                    "stage": "cpt",
                     "reason": "load_best_model_at_end=false",
                 },
                 ensure_ascii=False,
@@ -462,7 +428,10 @@ def main() -> None:
         callbacks=callbacks,
     )
 
-    resume_ckpt = initial_resume_ckpt if initial_resume_ckpt else None
+    last_ckpt = get_last_checkpoint(str(run_dir)) if run_dir.exists() else None
+    resume_ckpt = last_ckpt if last_ckpt else None
+    if resume_ckpt and args.init_adapter:
+        print(json.dumps({"event": "init_adapter_ignored", "stage": "cpt", "reason": "resume_checkpoint_exists"}, ensure_ascii=False))
 
     started_at = now_iso()
     stopped = False
@@ -499,21 +468,23 @@ def main() -> None:
         tokenizer.save_pretrained(best_adapter_dir)
         best_mode = "latest_alias" if not load_best_model_at_end else "best_checkpoint_missing_fallback_latest"
 
+    max_steps = int(train_cfg.get("max_steps", 30000))
+    completed = bool(trainer.state.global_step >= max_steps and not stopped)
     finished_at = now_iso()
     status = {
-        "event": "sft_train_done",
-        "stage": "sft",
+        "event": "cpt_train_done",
+        "stage": "cpt",
         "run_name": run_name,
         "started_at": started_at,
         "finished_at": finished_at,
         "resumed_from": resume_ckpt or "",
-        "init_adapter_requested": str(args.init_adapter or "").strip(),
-        "init_adapter_used": init_adapter_used,
         "best_checkpoint": best_ckpt or "",
         "best_mode": best_mode,
         "best_adapter_dir": str(best_adapter_dir.as_posix()),
         "latest_adapter_dir": str(latest_adapter_dir.as_posix()),
         "global_step": int(trainer.state.global_step),
+        "target_max_steps": max_steps,
+        "completed": completed,
         "best_metric": float(trainer.state.best_metric) if trainer.state.best_metric is not None else None,
         "stopped": stopped,
         "stop_reason": stop_reason,

@@ -27,7 +27,7 @@ def main() -> None:
 
     prompts = [str(x) for x in dict(cfg.get("smoke", {})).get("prompts", [])]
     if not prompts:
-        prompts = ["오늘 뭐하냐", "아까 얘기한거 한줄로 정리해봐", "그럼 결론 뭐로 가는게 맞음?"]
+        prompts = ["오늘 뭐함", "아까 말한 거 요약해봐", "그럼 결론 뭐로 갈까"]
 
     engine = SFTInferenceEngine.load(
         config_sft=args.config_sft,
