@@ -13,7 +13,7 @@ ConfigDict = dict[str, Any]
 ENV_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]*))?\}$")
 
 DEFAULT_PATHS: ConfigDict = {
-    "defaults": {"run_name": "room_v1"},
+    "defaults": {"run_name": "room_v2_context"},
     "raw": {
         "root_glob": "*.txt",
         "root_exclude": ["requirements.txt", "PORTABLE_STATE.txt"],
@@ -26,17 +26,18 @@ DEFAULT_PATHS: ConfigDict = {
         "output_dir": "data/processed",
         "preprocess": {
             "corpus_mode": "context_windows",
-            "context_turns": 8,
-            "min_context_turns": 2,
-            "sample_stride": 1,
+            "context_turns": 16,
+            "min_context_turns": 3,
+            "sample_stride": 2,
             "session_gap_minutes": 180,
             "merge_same_speaker": True,
-            "merge_gap_minutes": 2,
-            "max_merged_chars": 320,
+            "merge_gap_minutes": 3,
+            "max_merged_chars": 400,
             "min_message_chars": 2,
-            "min_target_chars": 6,
-            "max_message_chars": 320,
+            "min_target_chars": 10,
+            "max_message_chars": 400,
             "drop_low_signal": True,
+            "response_only_loss": True,
         },
     },
     "checkpoints": {"root_dir": "checkpoints"},
@@ -58,7 +59,7 @@ DEFAULT_PATHS: ConfigDict = {
 }
 
 DEFAULT_TRAIN: ConfigDict = {
-    "run_name": "room_v1",
+    "run_name": "room_v2_context",
     "auto_resume": True,
     "resume_path": "",
     "stop_file_name": "STOP",
@@ -68,6 +69,8 @@ DEFAULT_TRAIN: ConfigDict = {
         "tokenizer_path": "data/processed/tokenizer.json",
         "train_bin": "data/processed/train.bin",
         "val_bin": "data/processed/val.bin",
+        "train_loss_mask_bin": "data/processed/train_loss_mask.bin",
+        "val_loss_mask_bin": "data/processed/val_loss_mask.bin",
     },
     "model": {
         "block_size": 512,
@@ -80,14 +83,20 @@ DEFAULT_TRAIN: ConfigDict = {
     "optimization": {
         "batch_size": 16,
         "grad_accum_steps": 2,
-        "max_steps": 10000,
-        "learning_rate": 3e-4,
-        "min_lr": 3e-5,
-        "warmup_steps": 300,
+        "max_steps": 2147483647,
+        "learning_rate": 1.5e-4,
+        "min_lr": 1.5e-5,
+        "warmup_steps": 2000,
+        "lr_schedule": "cosine",
+        "lr_decay_steps": 600000,
         "weight_decay": 0.1,
         "beta1": 0.9,
         "beta2": 0.95,
         "grad_clip": 1.0,
+    },
+    "objective": {
+        "loss_mode": "response_only",
+        "require_loss_mask": True,
     },
     "logging": {
         "log_interval": 50,
@@ -101,7 +110,7 @@ DEFAULT_TRAIN: ConfigDict = {
 
 DEFAULT_GEN: ConfigDict = {
     "runtime": {
-        "run_name": "room_v1",
+        "run_name": "room_v2_context",
         "checkpoint": "",
         "checkpoint_preference": [
             "artifacts/model_latest.enc",
@@ -126,6 +135,13 @@ DEFAULT_GEN: ConfigDict = {
         "stop_on_next_turn": True,
     },
     "debug": {"return_raw": False},
+    "smoke": {
+        "prompts": [
+            "오늘 다들 뭐함",
+            "아까 얘기한거 다시 정리해줘",
+            "그럼 결론은 뭐로 가면 될까?",
+        ]
+    },
     "dialogue": {
         "mode": "anonymous",
         "max_turns": 12,

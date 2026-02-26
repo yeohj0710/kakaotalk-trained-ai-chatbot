@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Sequence
 
-from .config import load_gen_config, load_paths_config, load_train_config, save_json
+from .config import load_dotenv, load_gen_config, load_paths_config, load_train_config, save_json
 from .crypto_utils import decrypt_file, encrypt_file
 from .security import get_model_key
 
@@ -35,6 +36,16 @@ def _sha256_file(path: Path) -> str:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def _resolve_password(config_gen: str, env_path: str, explicit_password: str) -> str:
+    if explicit_password:
+        return explicit_password
+    load_dotenv(env_path=env_path, override=False)
+    gen_cfg = load_gen_config(config_path=config_gen, env_path=env_path)
+    security_cfg = dict(gen_cfg.get("security", {}))
+    env_name = str(security_cfg.get("password_env", "CHATBOT_PASSWORD"))
+    return str(os.getenv("CHATBOT_ACCESS_PASSWORD") or os.getenv(env_name) or "")
 
 
 def _resolve_publish_source(paths_cfg: dict, run_name: str) -> Path:
@@ -116,8 +127,9 @@ def cmd_reply(args: argparse.Namespace) -> int:
         module_args.extend(["--ckpt", args.ckpt])
     if args.run_name:
         module_args.extend(["--run_name", args.run_name])
-    if args.password:
-        module_args.extend(["--password", args.password])
+    password = _resolve_password(args.config_gen, args.env_path, args.password)
+    if password:
+        module_args.extend(["--password", password])
     return _run_module("chatbot.generate", module_args)
 
 
@@ -131,9 +143,26 @@ def cmd_chat(args: argparse.Namespace) -> int:
         module_args.extend(["--bot_speaker", args.bot_speaker])
     if args.user_speaker:
         module_args.extend(["--user_speaker", args.user_speaker])
-    if args.password:
-        module_args.extend(["--password", args.password])
+    password = _resolve_password(args.config_gen, args.env_path, args.password)
+    if password:
+        module_args.extend(["--password", password])
     return _run_module("chatbot.chat_cli", module_args)
+
+
+def cmd_smoke(args: argparse.Namespace) -> int:
+    module_args = ["--config_gen", args.config_gen, "--env_path", args.env_path]
+    if args.ckpt:
+        module_args.extend(["--ckpt", args.ckpt])
+    if args.run_name:
+        module_args.extend(["--run_name", args.run_name])
+    password = _resolve_password(args.config_gen, args.env_path, args.password)
+    if password:
+        module_args.extend(["--password", password])
+    if args.device:
+        module_args.extend(["--device", args.device])
+    if args.dtype:
+        module_args.extend(["--dtype", args.dtype])
+    return _run_module("chatbot.smoke", module_args)
 
 
 def cmd_bridge(args: argparse.Namespace) -> int:
@@ -144,8 +173,9 @@ def cmd_bridge(args: argparse.Namespace) -> int:
         module_args.extend(["--run_name", args.run_name])
     if args.bot_speaker:
         module_args.extend(["--bot_speaker", args.bot_speaker])
-    if args.password:
-        module_args.extend(["--password", args.password])
+    password = _resolve_password(args.config_gen, args.env_path, args.password)
+    if password:
+        module_args.extend(["--password", password])
     if args.send:
         module_args.append("--send")
     if args.dry:
@@ -276,6 +306,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--bot_speaker", default="")
     p_chat.add_argument("--password", default="")
     p_chat.set_defaults(func=cmd_chat)
+
+    p_smoke = sub.add_parser("smoke", help="Run fixed multi-turn smoke test.")
+    p_smoke.add_argument("--config_gen", default="configs/gen.yaml")
+    p_smoke.add_argument("--env_path", default=".env")
+    p_smoke.add_argument("--ckpt", default="")
+    p_smoke.add_argument("--run_name", default="")
+    p_smoke.add_argument("--password", default="")
+    p_smoke.add_argument("--device", default="", choices=["", "auto", "cpu", "cuda"])
+    p_smoke.add_argument("--dtype", default="", choices=["", "auto", "fp32", "fp16", "bf16"])
+    p_smoke.set_defaults(func=cmd_smoke)
 
     p_bridge = sub.add_parser("bridge", help="KakaoTalk bridge.")
     p_bridge.add_argument("--config_gen", default="configs/gen.yaml")

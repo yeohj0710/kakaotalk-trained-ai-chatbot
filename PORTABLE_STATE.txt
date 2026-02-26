@@ -1,54 +1,47 @@
 ﻿# PORTABLE_STATE.txt
-Single source of truth for resuming this project on another machine.
+Single source of truth for moving/resuming this project.
 
-[Required folders/files]
-1) Code/config
+[Default run]
+RUN_NAME=room_v2_context
+
+[Required for training resume]
 - configs/paths.yaml
 - configs/train.yaml
 - configs/gen.yaml
-- .env (or recreate from .env.example)
+- .env
+- data/processed/train.bin
+- data/processed/val.bin
+- data/processed/train_loss_mask.bin
+- data/processed/val_loss_mask.bin
+- data/processed/tokenizer.json
+- checkpoints/room_v2_context/latest.pt
 
-2) Data for training resume
-- data/raw/inbox/*.txt (or organized raw source)
-- data/processed/{train.bin,val.bin,tokenizer.json,stats.json,messages.jsonl,preview.json}
-- checkpoints/<run_name>/latest.pt (and optionally best.pt, snapshots/*)
-
-3) Data for inference-only
-- artifacts/model_latest.pt OR artifacts/model_latest.enc
-- artifacts/model_info.json
-- .env with CHATBOT_PASSWORD (+ CHATBOT_MODEL_KEY if using .enc)
+[Required for inference-only]
+- configs/gen.yaml
+- .env
+- artifacts/model_latest.pt (or model_latest.enc + CHATBOT_MODEL_KEY)
 
 [Environment variables]
-- CHATBOT_PASSWORD=...             # required for reply/chat/bridge gate
-- CHATBOT_MODEL_KEY=...            # required when loading encrypted model (.enc)
-- CHATBOT_DEFAULT_USER=...         # optional named-mode fallback
-- CHATBOT_DEFAULT_BOT=...          # optional named-mode fallback
+- CHATBOT_PASSWORD=...
+- CHATBOT_MODEL_KEY=... (enc model only)
+- CHATBOT_DEFAULT_USER=... (optional)
+- CHATBOT_DEFAULT_BOT=... (optional)
 
-[One-line resume commands]
-1) Full training resume:
-python -m chatbot.ops train
+[One-line commands]
+- Archive old state:  python -m chatbot.ops archive
+- Organize raw txt:   python -m chatbot.ops organize
+- Preprocess:         python -m chatbot.ops preprocess
+- Train/resume:       python -m chatbot.ops train
+- Quick test:         python -m chatbot.ops smoke
+- Reply:              python -m chatbot.ops reply "테스트"
+- Chat:               python -m chatbot.ops chat
+- Bridge dry-run:     python -m chatbot.ops bridge --dry
 
-2) Long-run training:
-python -m chatbot.ops train --max_steps 2147483647
+[Training objective]
+- Preprocess builds multi-turn context samples.
+- Loss mask marks response span only.
+- Trainer uses response-only masked cross-entropy.
 
-3) Inference check:
-python -m chatbot.ops reply "테스트"
-
-[Pipeline commands]
-- Archive old outputs: python -m chatbot.ops archive --dry && python -m chatbot.ops archive
-- Organize raw txt:    python -m chatbot.ops organize
-- Preprocess:          python -m chatbot.ops preprocess
-- Train/resume:        python -m chatbot.ops train
-- Chat:                python -m chatbot.ops chat
-- Bridge dry-run:      python -m chatbot.ops bridge --dry
-
-[Model publish]
-- Plain:      python -m chatbot.ops publish
-- Encrypted:  python -m chatbot.ops publish --encrypt
-Output is always kept as one latest artifact in `artifacts/`.
-
-[Important notes]
-- Default preprocess mode is context-aware (`context_windows`) and uses multi-turn context.
-- If model quality is poor, retune `configs/paths.yaml > processed.preprocess` and rerun preprocess+train.
-- Security gate is minimum protection only; code changes can bypass it.
-- Keep sensitive data out of git (`data/raw`, `data/processed`, `checkpoints`).
+[Important]
+- If tokenizer/model config changes, resume may be blocked by compatibility checks.
+- Keep private data out of git (`data/raw`, `data/processed`, `checkpoints`).

@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .config import load_paths_config, load_train_config, save_json, save_yaml
 from .console import to_console_safe
@@ -102,16 +103,62 @@ def get_batch(
     batch_size: int,
     block_size: int,
     device: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    loss_mask_data: np.ndarray | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     max_index = len(data) - block_size - 1
     if max_index <= 0:
         raise ValueError("Dataset is too small for the configured block_size.")
-    starts = torch.randint(0, max_index, (batch_size,))
+    starts: list[int] = []
+    if loss_mask_data is not None:
+        attempts = 0
+        while len(starts) < batch_size and attempts < 12:
+            attempts += 1
+            need = (batch_size - len(starts)) * 3
+            candidates = torch.randint(0, max_index, (need,))
+            for candidate in candidates.tolist():
+                start = int(candidate)
+                if np.any(loss_mask_data[start + 1 : start + block_size + 1]):
+                    starts.append(start)
+                    if len(starts) == batch_size:
+                        break
+    if len(starts) < batch_size:
+        fallback = torch.randint(0, max_index, (batch_size - len(starts),)).tolist()
+        starts.extend([int(x) for x in fallback])
+
     x = torch.stack([torch.from_numpy(data[idx : idx + block_size].astype(np.int64)) for idx in starts])
     y = torch.stack(
         [torch.from_numpy(data[idx + 1 : idx + block_size + 1].astype(np.int64)) for idx in starts]
     )
-    return x.to(device), y.to(device)
+    loss_mask: torch.Tensor | None = None
+    if loss_mask_data is not None:
+        loss_mask = torch.stack(
+            [
+                torch.from_numpy(loss_mask_data[idx + 1 : idx + block_size + 1].astype(np.float32))
+                for idx in starts
+            ]
+        )
+        loss_mask = loss_mask.to(device)
+    return x.to(device), y.to(device), loss_mask
+
+
+def compute_masked_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    loss_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    if loss_mask is None:
+        return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+
+    per_token = F.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        targets.view(-1),
+        reduction="none",
+    ).view_as(targets)
+    mask = loss_mask.to(dtype=per_token.dtype)
+    denom = mask.sum()
+    if denom.item() <= 0:
+        return per_token.mean()
+    return (per_token * mask).sum() / denom
 
 
 @torch.no_grad()
@@ -119,37 +166,59 @@ def estimate_loss(
     model: GPT,
     train_data: np.ndarray,
     val_data: np.ndarray,
+    train_loss_mask: np.ndarray | None,
+    val_loss_mask: np.ndarray | None,
     eval_iters: int,
     batch_size: int,
     block_size: int,
     device: str,
     autocast_dtype: torch.dtype | None,
+    use_response_only_loss: bool,
 ) -> dict[str, float]:
     out = {}
     model.eval()
-    for split, data in (("train", train_data), ("val", val_data)):
+    for split, data, mask_data in (
+        ("train", train_data, train_loss_mask),
+        ("val", val_data, val_loss_mask),
+    ):
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            x, y = get_batch(data, batch_size=batch_size, block_size=block_size, device=device)
+            x, y, loss_mask = get_batch(
+                data,
+                batch_size=batch_size,
+                block_size=block_size,
+                device=device,
+                loss_mask_data=mask_data if use_response_only_loss else None,
+            )
             context = (
                 torch.autocast(device_type="cuda", dtype=autocast_dtype)
                 if autocast_dtype is not None
                 else contextlib.nullcontext()
             )
             with context:
-                _, loss = model(x, y)
+                if use_response_only_loss:
+                    logits, _ = model(x)
+                    loss = compute_masked_loss(logits=logits, targets=y, loss_mask=loss_mask)
+                else:
+                    _, loss = model(x, y)
             losses[k] = float(loss.item())
         out[split] = float(losses.mean())
     model.train()
     return out
 
 
-def get_lr(step: int, max_steps: int, warmup_steps: int, learning_rate: float, min_lr: float) -> float:
+def get_lr(
+    step: int,
+    decay_steps: int,
+    warmup_steps: int,
+    learning_rate: float,
+    min_lr: float,
+) -> float:
     if step < warmup_steps:
         return learning_rate * step / max(1, warmup_steps)
-    if step > max_steps:
+    if step >= decay_steps:
         return min_lr
-    decay_ratio = (step - warmup_steps) / max(1, max_steps - warmup_steps)
+    decay_ratio = (step - warmup_steps) / max(1, decay_steps - warmup_steps)
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (learning_rate - min_lr)
 
@@ -339,11 +408,14 @@ def run_training(
     model_cfg = dict(train_cfg.get("model", {}))
     optim_cfg = dict(train_cfg.get("optimization", {}))
     logging_cfg = dict(train_cfg.get("logging", {}))
+    objective_cfg = dict(train_cfg.get("objective", {}))
 
     data_dir = Path(str(data_cfg.get("data_dir", "data/processed")))
     tokenizer_path = Path(str(data_cfg.get("tokenizer_path", data_dir / "tokenizer.json")))
     train_bin = Path(str(data_cfg.get("train_bin", data_dir / "train.bin")))
     val_bin = Path(str(data_cfg.get("val_bin", data_dir / "val.bin")))
+    train_loss_mask_bin = Path(str(data_cfg.get("train_loss_mask_bin", data_dir / "train_loss_mask.bin")))
+    val_loss_mask_bin = Path(str(data_cfg.get("val_loss_mask_bin", data_dir / "val_loss_mask.bin")))
     if not tokenizer_path.exists():
         raise FileNotFoundError(f"Tokenizer not found: {tokenizer_path}")
     if not train_bin.exists() or not val_bin.exists():
@@ -356,6 +428,29 @@ def run_training(
     val_data = np.fromfile(val_bin, dtype=np.uint16)
     if len(train_data) < 5000:
         raise RuntimeError("Train dataset is too small. Check preprocessing output.")
+
+    loss_mode = str(objective_cfg.get("loss_mode", "response_only")).strip().lower()
+    use_response_only_loss = loss_mode == "response_only"
+    if loss_mode not in {"response_only", "full_sequence"}:
+        raise ValueError("objective.loss_mode must be one of: response_only, full_sequence")
+    require_loss_mask = bool(objective_cfg.get("require_loss_mask", use_response_only_loss))
+
+    train_loss_mask: np.ndarray | None = None
+    val_loss_mask: np.ndarray | None = None
+    if train_loss_mask_bin.exists() and val_loss_mask_bin.exists():
+        train_loss_mask = np.fromfile(train_loss_mask_bin, dtype=np.uint8)
+        val_loss_mask = np.fromfile(val_loss_mask_bin, dtype=np.uint8)
+        if len(train_loss_mask) != len(train_data) or len(val_loss_mask) != len(val_data):
+            raise RuntimeError(
+                "Loss mask length mismatch. Re-run preprocess to regenerate aligned mask files."
+            )
+    elif require_loss_mask:
+        raise FileNotFoundError(
+            "Missing loss mask files (train_loss_mask.bin/val_loss_mask.bin). "
+            "Run preprocess before training."
+        )
+    else:
+        use_response_only_loss = False
 
     seed = int(runtime_cfg.get("seed", 42))
     torch.manual_seed(seed)
@@ -463,6 +558,8 @@ def run_training(
     warmup_steps = int(optim_cfg.get("warmup_steps", 300))
     learning_rate = float(optim_cfg.get("learning_rate", 3e-4))
     min_lr = float(optim_cfg.get("min_lr", 3e-5))
+    lr_schedule = str(optim_cfg.get("lr_schedule", "cosine")).strip().lower()
+    lr_decay_steps = max(warmup_steps + 1, int(optim_cfg.get("lr_decay_steps", max_steps)))
     grad_clip = float(optim_cfg.get("grad_clip", 1.0))
 
     stop_file = run_dir / str(train_cfg.get("stop_file_name", "STOP"))
@@ -470,6 +567,14 @@ def run_training(
     stop_reason = ""
     t_start = time.time()
     final_step = start_step - 1
+    objective_info = {
+        "event": "objective",
+        "loss_mode": "response_only" if use_response_only_loss else "full_sequence",
+        "lr_schedule": lr_schedule,
+        "lr_decay_steps": lr_decay_steps,
+    }
+    print(json.dumps(objective_info, ensure_ascii=False))
+    write_jsonl(train_log_path, objective_info)
 
     try:
         model.train()
@@ -481,27 +586,35 @@ def run_training(
                 stop_reason = "stop_file"
                 stop_file.unlink(missing_ok=True)
 
-            lr = get_lr(
-                step=step,
-                max_steps=max_steps,
-                warmup_steps=warmup_steps,
-                learning_rate=learning_rate,
-                min_lr=min_lr,
-            )
+            if lr_schedule == "constant":
+                lr = learning_rate
+            else:
+                lr = get_lr(
+                    step=step,
+                    decay_steps=lr_decay_steps,
+                    warmup_steps=warmup_steps,
+                    learning_rate=learning_rate,
+                    min_lr=min_lr,
+                )
             for group in optimizer.param_groups:
                 group["lr"] = lr
 
             optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
             for _ in range(grad_accum_steps):
-                xb, yb = get_batch(
+                xb, yb, loss_mask = get_batch(
                     train_data,
                     batch_size=batch_size,
                     block_size=gpt_cfg.block_size,
                     device=device,
+                    loss_mask_data=train_loss_mask if use_response_only_loss else None,
                 )
                 with autocast_context():
-                    _, loss = model(xb, yb)
+                    if use_response_only_loss:
+                        logits, _ = model(xb)
+                        loss = compute_masked_loss(logits=logits, targets=yb, loss_mask=loss_mask)
+                    else:
+                        _, loss = model(xb, yb)
                     scaled_loss = loss / grad_accum_steps
                 loss_value += float(loss.item())
                 if scaler.is_enabled():
@@ -542,11 +655,14 @@ def run_training(
                     model=model,
                     train_data=train_data,
                     val_data=val_data,
+                    train_loss_mask=train_loss_mask,
+                    val_loss_mask=val_loss_mask,
                     eval_iters=eval_iters,
                     batch_size=batch_size,
                     block_size=gpt_cfg.block_size,
                     device=device,
                     autocast_dtype=autocast_dtype,
+                    use_response_only_loss=use_response_only_loss,
                 )
                 eval_payload = {
                     "event": "eval",
@@ -654,6 +770,7 @@ def run_training(
         "run_dir": str(run_dir.resolve()),
         "device": device,
         "dtype": dtype_name,
+        "loss_mode": "response_only" if use_response_only_loss else "full_sequence",
     }
     save_json(run_dir / "last_status.json", result)
     write_jsonl(train_log_path, {"event": "final", **result})

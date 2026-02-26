@@ -1,4 +1,4 @@
-run_name: room_v1
+run_name: room_v2_context
 auto_resume: true
 resume_path: ""
 stop_file_name: STOP
@@ -14,6 +14,8 @@ data:
   tokenizer_path: data/processed/tokenizer.json
   train_bin: data/processed/train.bin
   val_bin: data/processed/val.bin
+  train_loss_mask_bin: data/processed/train_loss_mask.bin
+  val_loss_mask_bin: data/processed/val_loss_mask.bin
 
 model:
   block_size: 512
@@ -26,20 +28,26 @@ model:
 optimization:
   batch_size: 16
   grad_accum_steps: 2
-  max_steps: 10000
-  learning_rate: 0.0003
-  min_lr: 0.00003
-  warmup_steps: 300
+  max_steps: 2147483647
+  learning_rate: 0.00015
+  min_lr: 0.000015
+  warmup_steps: 2000
+  lr_schedule: cosine
+  lr_decay_steps: 600000
   weight_decay: 0.1
   beta1: 0.9
   beta2: 0.95
   grad_clip: 1.0
 
+objective:
+  loss_mode: response_only
+  require_loss_mask: true
+
 logging:
   log_interval: 50
-  eval_interval: 200
+  eval_interval: 500
   eval_iters: 20
-  save_interval: 200
+  save_interval: 500
   keep_last_n_snapshots: 20
   sample_prompts:
     - "<|bos|>"

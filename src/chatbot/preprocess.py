@@ -64,6 +64,7 @@ class ContextBuildOptions:
     min_target_chars: int = 6
     max_message_chars: int = 320
     drop_low_signal: bool = True
+    response_only_loss: bool = True
 
 
 def read_chat_text(path: Path) -> str:
@@ -193,6 +194,24 @@ def is_low_signal_message(text: str) -> bool:
 
 def format_row(tokenizer: ByteSpecialTokenizer, msg: ChatMessage) -> str:
     return f"{tokenizer.bos_token}{tokenizer.speaker_token(msg.speaker)}{msg.text}{tokenizer.eos_token}\n"
+
+
+def encode_row_with_mask(
+    tokenizer: ByteSpecialTokenizer,
+    msg: ChatMessage,
+    response_only_loss: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    prefix = f"{tokenizer.bos_token}{tokenizer.speaker_token(msg.speaker)}"
+    target = f"{msg.text}{tokenizer.eos_token}\n"
+    prefix_ids = tokenizer.encode(prefix)
+    target_ids = tokenizer.encode(target)
+
+    token_ids = np.asarray(prefix_ids + target_ids, dtype=np.uint16)
+    if response_only_loss:
+        mask = np.asarray(([0] * len(prefix_ids)) + ([1] * len(target_ids)), dtype=np.uint8)
+    else:
+        mask = np.asarray([1] * len(token_ids), dtype=np.uint8)
+    return token_ids, mask
 
 
 def dump_jsonl(messages: list[ChatMessage], output_path: Path) -> None:
@@ -336,18 +355,27 @@ def write_flat_corpus_bin(
     messages: list[ChatMessage],
     tokenizer: ByteSpecialTokenizer,
     output_path: Path,
+    mask_output_path: Path,
+    response_only_loss: bool,
     preview_limit: int = 5,
 ) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    mask_output_path.parent.mkdir(parents=True, exist_ok=True)
     preview: list[dict[str, str]] = []
     total_tokens = 0
+    total_loss_tokens = 0
 
-    with output_path.open("wb") as handle:
+    with output_path.open("wb") as handle, mask_output_path.open("wb") as mask_handle:
         for msg in messages:
-            row = format_row(tokenizer=tokenizer, msg=msg)
-            ids = np.asarray(tokenizer.encode(row), dtype=np.uint16)
+            ids, loss_mask = encode_row_with_mask(
+                tokenizer=tokenizer,
+                msg=msg,
+                response_only_loss=response_only_loss,
+            )
             handle.write(ids.tobytes())
+            mask_handle.write(loss_mask.tobytes())
             total_tokens += int(ids.size)
+            total_loss_tokens += int(loss_mask.sum())
             if len(preview) < preview_limit:
                 preview.append(
                     {
@@ -360,6 +388,8 @@ def write_flat_corpus_bin(
 
     return {
         "tokens": total_tokens,
+        "loss_tokens": total_loss_tokens,
+        "loss_token_ratio": round(float(total_loss_tokens / max(1, total_tokens)), 6),
         "examples": len(messages),
         "preview": preview,
         "skipped_short_target": 0,
@@ -372,12 +402,15 @@ def write_context_corpus_bin(
     sessions: list[DialogueSession],
     tokenizer: ByteSpecialTokenizer,
     output_path: Path,
+    mask_output_path: Path,
     options: ContextBuildOptions,
     preview_limit: int = 5,
 ) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    mask_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     total_tokens = 0
+    total_loss_tokens = 0
     examples = 0
     skipped_short_target = 0
     skipped_short_context = 0
@@ -385,7 +418,7 @@ def write_context_corpus_bin(
     preview: list[dict[str, Any]] = []
     stride = max(1, options.sample_stride)
 
-    with output_path.open("wb") as handle:
+    with output_path.open("wb") as handle, mask_output_path.open("wb") as mask_handle:
         for session in sessions:
             msgs = session.messages
             if len(msgs) < 2:
@@ -404,15 +437,29 @@ def write_context_corpus_bin(
                     continue
 
                 rows = io.StringIO()
+                mask_values: list[int] = []
                 for item in context:
-                    rows.write(format_row(tokenizer=tokenizer, msg=item))
+                    row_text = format_row(tokenizer=tokenizer, msg=item)
+                    rows.write(row_text)
+                    row_ids = tokenizer.encode(row_text)
+                    mask_values.extend([0] * len(row_ids))
+                _, target_mask = encode_row_with_mask(
+                    tokenizer=tokenizer,
+                    msg=target,
+                    response_only_loss=options.response_only_loss,
+                )
                 rows.write(format_row(tokenizer=tokenizer, msg=target))
                 sample_text = rows.getvalue()
-
-                ids = np.asarray(tokenizer.encode(sample_text), dtype=np.uint16)
+                sample_ids = tokenizer.encode(sample_text)
+                ids = np.asarray(sample_ids, dtype=np.uint16)
+                if len(mask_values) + len(target_mask) != len(ids):
+                    raise RuntimeError("Loss mask alignment mismatch during preprocessing.")
+                loss_mask = np.asarray(mask_values + target_mask.tolist(), dtype=np.uint8)
                 handle.write(ids.tobytes())
+                mask_handle.write(loss_mask.tobytes())
 
                 total_tokens += int(ids.size)
+                total_loss_tokens += int(loss_mask.sum())
                 examples += 1
                 context_turn_total += len(context)
 
@@ -438,6 +485,8 @@ def write_context_corpus_bin(
     avg_context_turns = float(context_turn_total / examples) if examples > 0 else 0.0
     return {
         "tokens": total_tokens,
+        "loss_tokens": total_loss_tokens,
+        "loss_token_ratio": round(float(total_loss_tokens / max(1, total_tokens)), 6),
         "examples": examples,
         "preview": preview,
         "skipped_short_target": skipped_short_target,
@@ -509,6 +558,8 @@ def main() -> None:
     parser.add_argument("--no_merge_same_speaker", dest="merge_same_speaker", action="store_false")
     parser.add_argument("--drop_low_signal", dest="drop_low_signal", action="store_true", default=None)
     parser.add_argument("--keep_low_signal", dest="drop_low_signal", action="store_false")
+    parser.add_argument("--response_only_loss", dest="response_only_loss", action="store_true", default=None)
+    parser.add_argument("--full_sequence_loss", dest="response_only_loss", action="store_false")
 
     args = parser.parse_args()
 
@@ -534,6 +585,7 @@ def main() -> None:
         min_target_chars=resolve_int(args.min_target_chars, preprocess_cfg.get("min_target_chars"), 6, minimum=1),
         max_message_chars=resolve_int(args.max_message_chars, preprocess_cfg.get("max_message_chars"), 320, minimum=32),
         drop_low_signal=resolve_bool(args.drop_low_signal, preprocess_cfg.get("drop_low_signal"), True),
+        response_only_loss=resolve_bool(args.response_only_loss, preprocess_cfg.get("response_only_loss"), True),
     )
     if context_options.corpus_mode not in {"context_windows", "flat"}:
         raise ValueError("corpus_mode must be one of: context_windows, flat")
@@ -647,12 +699,15 @@ def main() -> None:
 
     train_bin = output_dir / "train.bin"
     val_bin = output_dir / "val.bin"
+    train_loss_mask_bin = output_dir / "train_loss_mask.bin"
+    val_loss_mask_bin = output_dir / "val_loss_mask.bin"
 
     if context_options.corpus_mode == "context_windows":
         train_stats = write_context_corpus_bin(
             sessions=train_sessions,
             tokenizer=tokenizer,
             output_path=train_bin,
+            mask_output_path=train_loss_mask_bin,
             options=context_options,
             preview_limit=5,
         )
@@ -660,6 +715,7 @@ def main() -> None:
             sessions=val_sessions,
             tokenizer=tokenizer,
             output_path=val_bin,
+            mask_output_path=val_loss_mask_bin,
             options=context_options,
             preview_limit=2,
         )
@@ -670,12 +726,16 @@ def main() -> None:
             messages=train_messages,
             tokenizer=tokenizer,
             output_path=train_bin,
+            mask_output_path=train_loss_mask_bin,
+            response_only_loss=context_options.response_only_loss,
             preview_limit=5,
         )
         val_stats = write_flat_corpus_bin(
             messages=val_messages,
             tokenizer=tokenizer,
             output_path=val_bin,
+            mask_output_path=val_loss_mask_bin,
+            response_only_loss=context_options.response_only_loss,
             preview_limit=2,
         )
 
@@ -699,6 +759,10 @@ def main() -> None:
         "val_examples": int(val_stats["examples"]),
         "train_tokens": int(train_stats["tokens"]),
         "val_tokens": int(val_stats["tokens"]),
+        "train_loss_tokens": int(train_stats.get("loss_tokens", 0)),
+        "val_loss_tokens": int(val_stats.get("loss_tokens", 0)),
+        "train_loss_token_ratio": float(train_stats.get("loss_token_ratio", 0.0)),
+        "val_loss_token_ratio": float(val_stats.get("loss_token_ratio", 0.0)),
         "vocab_size": tokenizer.vocab_size,
         "special_tokens": tokenizer.special_tokens,
         "speaker_counts": dict(speaker_counts),
@@ -716,6 +780,7 @@ def main() -> None:
             "min_target_chars": context_options.min_target_chars,
             "max_message_chars": context_options.max_message_chars,
             "drop_low_signal": context_options.drop_low_signal,
+            "response_only_loss": context_options.response_only_loss,
             "shuffle_before_split": args.shuffle_before_split,
             "val_ratio": args.val_ratio,
         },
@@ -751,6 +816,8 @@ def main() -> None:
                 "mode": context_options.corpus_mode,
                 "train_examples": int(train_stats["examples"]),
                 "train_tokens": int(train_stats["tokens"]),
+                "train_loss_token_ratio": float(train_stats.get("loss_token_ratio", 0.0)),
+                "train_loss_mask_bin": str(train_loss_mask_bin.as_posix()),
             },
             ensure_ascii=False,
         )

@@ -1,5 +1,5 @@
 ﻿runtime:
-  run_name: room_v1
+  run_name: room_v2_context
   checkpoint: ""
   checkpoint_preference:
     - artifacts/model_latest.enc
@@ -24,6 +24,12 @@ output:
 
 debug:
   return_raw: false
+
+smoke:
+  prompts:
+    - "오늘 다들 뭐함"
+    - "아까 얘기한거 다시 정리해줘"
+    - "그럼 결론은 뭐로 가면 될까?"
 
 dialogue:
   mode: anonymous
@@ -52,6 +58,7 @@ security:
   password_env: CHATBOT_PASSWORD
   password_hash_env: CHATBOT_PASSWORD_HASH
   model_key_env: CHATBOT_MODEL_KEY
+
 
 
 
