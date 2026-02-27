@@ -30,6 +30,32 @@ def one_line(text: str) -> str:
     return out.strip()
 
 
+SUMMARY_BULLET_RE = re.compile(r"(?:^|\n)\s*[·•▪◦●]\s+")
+SUMMARY_KEYWORD_RE = re.compile(r"(요약|정리하면|요약하면|한줄요약|3줄요약|총정리|AI정리|GPT\s*요약|채팅봇)", re.IGNORECASE)
+SUMMARY_PROSE_RE = re.compile(r"(라고\s*한다|다고\s*한다|하고\s*있다|했어요|였습니다)")
+
+
+def is_summary_artifact_message(text: str, bullet_min_count: int = 1) -> bool:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return False
+
+    bullet_count = len(SUMMARY_BULLET_RE.findall(normalized))
+    if bullet_count >= max(1, bullet_min_count):
+        return True
+    if bullet_count <= 0:
+        return False
+
+    if SUMMARY_KEYWORD_RE.search(normalized):
+        return True
+    prose_hits = len(SUMMARY_PROSE_RE.findall(normalized))
+    if prose_hits >= 2:
+        return True
+    if len(normalized) >= 80 and prose_hits >= 1:
+        return True
+    return False
+
+
 def build_prompt(
     context: list[ChatMessage],
     system_prompt: str,
@@ -94,6 +120,8 @@ def main() -> None:
     mask_urls = bool(data_cfg.get("mask_urls", True))
     mask_numbers = bool(data_cfg.get("mask_numbers", False))
     drop_media_only = bool(data_cfg.get("drop_media_only", True))
+    drop_summary_artifacts = bool(data_cfg.get("drop_summary_artifacts", True))
+    summary_bullet_min_count = max(1, int(data_cfg.get("summary_bullet_min_count", 1)))
     max_examples_per_split = int(data_cfg.get("max_examples_per_split", 0))
     response_one_line = bool(prompt_cfg.get("response_one_line", True))
     cpt_cfg = dict(cfg.get("cpt_data", {}))
@@ -146,6 +174,9 @@ def main() -> None:
             continue
         if drop_low_signal and is_low_signal_message(text):
             drop_reasons["low_signal"] += 1
+            continue
+        if drop_summary_artifacts and is_summary_artifact_message(text, bullet_min_count=summary_bullet_min_count):
+            drop_reasons["summary_artifact"] += 1
             continue
 
         cleaned_messages.append(

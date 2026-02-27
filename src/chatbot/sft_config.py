@@ -47,6 +47,8 @@ DEFAULT_SFT_CONFIG: ConfigDict = {
         "mask_urls": True,
         "mask_numbers": False,
         "drop_media_only": True,
+        "drop_summary_artifacts": True,
+        "summary_bullet_min_count": 1,
         "max_examples_per_split": 0,
     },
     "cpt_data": {
@@ -158,6 +160,7 @@ DEFAULT_SFT_CONFIG: ConfigDict = {
         "top_p": 0.92,
         "top_k": 50,
         "repetition_penalty": 1.05,
+        "avoid_summary_artifacts": True,
         "max_history_turns": 16,
         "min_reply_chars": 8,
         "regen_attempts": 2,

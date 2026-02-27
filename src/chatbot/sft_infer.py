@@ -82,6 +82,57 @@ def strip_generation_artifacts(text: str) -> str:
     return out
 
 
+MENTION_RE = re.compile(r"@[A-Za-z0-9_\-\.가-힣ㄱ-ㅎㅏ-ㅣ]+")
+SUMMARY_BULLET_RE = re.compile(r"[·•▪◦●]")
+SUMMARY_HINT_RE = re.compile(r"(요약|정리하면|요약하면|한줄요약|3줄요약|채팅봇|gpt\s*요약)", re.IGNORECASE)
+SUMMARY_PROSE_RE = re.compile(r"(라고\s*한다|다고\s*한다|하고\s*있다|했어요|였습니다)")
+
+
+def trim_mentions(text: str, max_mentions: int) -> str:
+    if max_mentions < 0:
+        return text
+
+    if max_mentions == 0:
+        out = MENTION_RE.sub("", text)
+    else:
+        kept = 0
+
+        def _repl(match: re.Match[str]) -> str:
+            nonlocal kept
+            kept += 1
+            return match.group(0) if kept <= max_mentions else ""
+
+        out = MENTION_RE.sub(_repl, text)
+
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\s*([,;:])\s*", r"\1 ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" \t,;:")
+    return out
+
+
+def looks_like_summary_artifact(text: str) -> bool:
+    out = (text or "").strip()
+    if not out:
+        return False
+    if len(SUMMARY_BULLET_RE.findall(out)) >= 1:
+        return True
+    if SUMMARY_HINT_RE.search(out):
+        return True
+    if len(SUMMARY_PROSE_RE.findall(out)) >= 2 and len(out) >= 40:
+        return True
+    return False
+
+
+def soften_summary_artifact(text: str) -> str:
+    out = (text or "").strip()
+    if not out:
+        return out
+    out = SUMMARY_BULLET_RE.sub(" ", out)
+    out = re.sub(r"(한줄요약|3줄요약|요약하면|정리하면|요약)\s*[:：]?", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"[ \t]{2,}", " ", out).strip(" \t,;:")
+    return out
+
+
 def resolve_torch_dtype(name: str) -> torch.dtype:
     normalized = str(name).strip().lower()
     if normalized in {"bf16", "bfloat16"}:
@@ -165,7 +216,10 @@ class SFTInferOptions:
     top_p: float
     top_k: int
     repetition_penalty: float
+    avoid_summary_artifacts: bool
+    max_mentions: int
     max_history_turns: int
+    include_bot_history: bool
     min_reply_chars: int
     regen_attempts: int
     one_line: bool
@@ -293,7 +347,10 @@ class SFTInferenceEngine:
             top_p=float(gen_cfg.get("top_p", 0.92)),
             top_k=int(gen_cfg.get("top_k", 50)),
             repetition_penalty=float(gen_cfg.get("repetition_penalty", 1.05)),
+            avoid_summary_artifacts=bool(gen_cfg.get("avoid_summary_artifacts", True)),
+            max_mentions=int(gen_cfg.get("max_mentions", 0)),
             max_history_turns=max(1, int(gen_cfg.get("max_history_turns", 16))),
+            include_bot_history=bool(gen_cfg.get("include_bot_history", True)),
             min_reply_chars=max(1, int(gen_cfg.get("min_reply_chars", 8))),
             regen_attempts=max(0, int(gen_cfg.get("regen_attempts", 2))),
             one_line=bool(gen_cfg.get("one_line", True)),
@@ -316,9 +373,12 @@ class SFTInferenceEngine:
         return out[:700].strip()
 
     def _build_prompt(self, history: list[tuple[str, str]], new_user_input: str) -> str:
+        if self.options.include_bot_history:
+            tail = history[-(self.options.max_history_turns * 2) :]
+        else:
+            tail = [(role, text) for role, text in history if role != "bot"][-self.options.max_history_turns :]
         if self.options.use_chat_template and hasattr(self.tokenizer, "apply_chat_template"):
             messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
-            tail = history[-(self.options.max_history_turns * 2) :]
             for role, text in tail:
                 if role == "bot":
                     messages.append({"role": "assistant", "content": text})
@@ -327,7 +387,6 @@ class SFTInferenceEngine:
             messages.append({"role": "user", "content": new_user_input})
             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        tail = history[-(self.options.max_history_turns * 2) :]
         lines: list[str] = []
         for role, text in tail:
             speaker = "봇" if role == "bot" else "사용자"
@@ -361,16 +420,23 @@ class SFTInferenceEngine:
         generated_ids = output[0][prompt_len:]
         raw = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
         cleaned = sanitize_text(raw, one_line=self.options.one_line, max_chars=self.options.max_chars)
-        return strip_generation_artifacts(cleaned)
+        out = strip_generation_artifacts(cleaned)
+        return trim_mentions(out, max_mentions=self.options.max_mentions)
 
     def reply(self, history: list[tuple[str, str]], user_text: str) -> str:
         prompt = self._build_prompt(history=history, new_user_input=user_text)
         result = ""
         for _ in range(self.options.regen_attempts + 1):
             candidate = self._generate_once(prompt)
-            if len(candidate.replace(" ", "")) >= self.options.min_reply_chars:
-                return candidate
-            result = candidate
+            if len(candidate.replace(" ", "")) < self.options.min_reply_chars:
+                result = candidate
+                continue
+            if self.options.avoid_summary_artifacts and looks_like_summary_artifact(candidate):
+                result = candidate
+                continue
+            return candidate
+        if self.options.avoid_summary_artifacts and looks_like_summary_artifact(result):
+            result = soften_summary_artifact(result)
         return result or "..."
 
 
