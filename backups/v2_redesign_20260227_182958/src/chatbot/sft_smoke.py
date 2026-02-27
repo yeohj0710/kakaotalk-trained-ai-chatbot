@@ -16,7 +16,6 @@ def main() -> None:
     parser.add_argument("--env_path", default=".env")
     parser.add_argument("--adapter", default="")
     parser.add_argument("--run_name", default="")
-    parser.add_argument("--mode", default="one_on_one")
     parser.add_argument("--password", default="")
     args = parser.parse_args()
 
@@ -28,14 +27,13 @@ def main() -> None:
 
     prompts = [str(x) for x in dict(cfg.get("smoke", {})).get("prompts", [])]
     if not prompts:
-        prompts = ["오늘 분위기 어때", "아까 얘기 이어서 말해봐", "그럼 지금 뭘 하는게 좋을까"]
+        prompts = ["오늘 뭐함", "아까 말한 거 요약해봐", "그럼 결론 뭐로 갈까"]
 
     engine = SFTInferenceEngine.load(
         config_sft=args.config_sft,
         env_path=args.env_path,
         adapter_path=args.adapter,
         run_name_override=args.run_name,
-        mode_override=args.mode,
     )
     history: list[tuple[str, str]] = []
     print(f"[smoke] adapter={engine.adapter_dir}")

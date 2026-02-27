@@ -23,11 +23,6 @@ from .preprocess import (
 from .sft_config import format_with_run_name, load_sft_config
 
 
-MENTION_RE = re.compile(r"@[A-Za-z0-9_.\-가-힣]+")
-SUMMARY_BULLET_RE = re.compile(r"(?m)^\s*[·•\-]\s+")
-SUMMARY_KEYWORD_RE = re.compile(r"(요약|정리|핵심|summary)", re.IGNORECASE)
-
-
 def one_line(text: str) -> str:
     out = text.replace("\r\n", "\n").replace("\r", "\n")
     out = re.sub(r"\s*\n+\s*", " ", out)
@@ -35,25 +30,28 @@ def one_line(text: str) -> str:
     return out.strip()
 
 
-def count_mentions(text: str) -> int:
-    return len(MENTION_RE.findall(text or ""))
-
-
-def strip_mentions(text: str) -> str:
-    out = MENTION_RE.sub("", text or "")
-    out = re.sub(r"[ \t]{2,}", " ", out)
-    out = re.sub(r"\s*([,;:])\s*", r"\1 ", out)
-    return out.strip(" \t,;:")
+SUMMARY_BULLET_RE = re.compile(r"(?:^|\n)\s*[·•▪◦●]\s+")
+SUMMARY_KEYWORD_RE = re.compile(r"(요약|정리하면|요약하면|한줄요약|3줄요약|총정리|AI정리|GPT\s*요약|채팅봇)", re.IGNORECASE)
+SUMMARY_PROSE_RE = re.compile(r"(라고\s*한다|다고\s*한다|하고\s*있다|했어요|였습니다)")
 
 
 def is_summary_artifact_message(text: str, bullet_min_count: int = 1) -> bool:
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
         return False
+
     bullet_count = len(SUMMARY_BULLET_RE.findall(normalized))
     if bullet_count >= max(1, bullet_min_count):
         return True
-    if SUMMARY_KEYWORD_RE.search(normalized) and bullet_count > 0:
+    if bullet_count <= 0:
+        return False
+
+    if SUMMARY_KEYWORD_RE.search(normalized):
+        return True
+    prose_hits = len(SUMMARY_PROSE_RE.findall(normalized))
+    if prose_hits >= 2:
+        return True
+    if len(normalized) >= 80 and prose_hits >= 1:
         return True
     return False
 
@@ -69,7 +67,7 @@ def build_prompt(
         f"[SYSTEM]\n{system_prompt.strip()}\n\n"
         f"[TASK]\n{task_prompt.strip()}\n\n"
         f"[DIALOGUE]\n{context_text}\n\n"
-        "[ANSWER]\n"
+        f"[ANSWER]\n"
     )
 
 
@@ -81,7 +79,7 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build SFT/CPT datasets from KakaoTalk exports.")
+    parser = argparse.ArgumentParser(description="Build SFT dataset from KakaoTalk exports.")
     parser.add_argument("--config_sft", default="configs/sft.yaml")
     parser.add_argument("--env_path", default=".env")
     args = parser.parse_args()
@@ -92,7 +90,7 @@ def main() -> None:
     data_cfg = dict(cfg.get("data", {}))
     prompt_cfg = dict(cfg.get("prompt", {}))
 
-    run_name = str(project_cfg.get("run_name", "room_lora_qwen25_7b_group_v2")).strip() or "room_lora_qwen25_7b_group_v2"
+    run_name = str(project_cfg.get("run_name", "room_lora_qwen25_3b_base")).strip() or "room_lora_qwen25_3b_base"
     seed = int(project_cfg.get("seed", 42))
     random.seed(seed)
 
@@ -109,27 +107,23 @@ def main() -> None:
     shuffle_before_split = bool(data_cfg.get("shuffle_before_split", False))
     val_ratio = float(data_cfg.get("val_ratio", 0.02))
     session_gap_minutes = int(data_cfg.get("session_gap_minutes", 180))
-    context_turns = max(1, int(data_cfg.get("context_turns", 8)))
-    min_context_turns = max(1, int(data_cfg.get("min_context_turns", 2)))
-    sample_stride = max(1, int(data_cfg.get("sample_stride", 1)))
+    context_turns = int(data_cfg.get("context_turns", 18))
+    min_context_turns = int(data_cfg.get("min_context_turns", 3))
+    sample_stride = max(1, int(data_cfg.get("sample_stride", 2)))
     merge_same_speaker = bool(data_cfg.get("merge_same_speaker", True))
-    merge_gap_minutes = int(data_cfg.get("merge_gap_minutes", 2))
-    max_merged_chars = int(data_cfg.get("max_merged_chars", 320))
+    merge_gap_minutes = int(data_cfg.get("merge_gap_minutes", 3))
+    max_merged_chars = int(data_cfg.get("max_merged_chars", 420))
     min_message_chars = int(data_cfg.get("min_message_chars", 2))
-    min_target_chars = int(data_cfg.get("min_target_chars", 8))
-    max_message_chars = int(data_cfg.get("max_message_chars", 320))
+    min_target_chars = int(data_cfg.get("min_target_chars", 10))
+    max_message_chars = int(data_cfg.get("max_message_chars", 420))
     drop_low_signal = bool(data_cfg.get("drop_low_signal", True))
     mask_urls = bool(data_cfg.get("mask_urls", True))
     mask_numbers = bool(data_cfg.get("mask_numbers", False))
     drop_media_only = bool(data_cfg.get("drop_media_only", True))
     drop_summary_artifacts = bool(data_cfg.get("drop_summary_artifacts", True))
     summary_bullet_min_count = max(1, int(data_cfg.get("summary_bullet_min_count", 1)))
-    drop_mention_messages = bool(data_cfg.get("drop_mention_messages", True))
-    max_mentions_per_message = max(0, int(data_cfg.get("max_mentions_per_message", 0)))
-    strip_mentions_before_filter = bool(data_cfg.get("strip_mentions_before_filter", False))
     max_examples_per_split = int(data_cfg.get("max_examples_per_split", 0))
     response_one_line = bool(prompt_cfg.get("response_one_line", True))
-
     cpt_cfg = dict(cfg.get("cpt_data", {}))
     cpt_window_messages = max(2, int(cpt_cfg.get("window_messages", 64)))
     cpt_stride_messages = max(1, int(cpt_cfg.get("stride_messages", 16)))
@@ -175,11 +169,6 @@ def main() -> None:
         if len(text) > max_message_chars:
             text = text[:max_message_chars].rstrip()
 
-        mention_count = count_mentions(text)
-        if strip_mentions_before_filter and mention_count > 0:
-            text = strip_mentions(text)
-            mention_count = count_mentions(text)
-
         if compact_length(text) < min_message_chars:
             drop_reasons["short_message"] += 1
             continue
@@ -188,9 +177,6 @@ def main() -> None:
             continue
         if drop_summary_artifacts and is_summary_artifact_message(text, bullet_min_count=summary_bullet_min_count):
             drop_reasons["summary_artifact"] += 1
-            continue
-        if drop_mention_messages and mention_count > max_mentions_per_message:
-            drop_reasons["mention_artifact"] += 1
             continue
 
         cleaned_messages.append(
@@ -245,7 +231,6 @@ def main() -> None:
             if len(msgs) < 2:
                 local_drop["short_session"] += 1
                 continue
-
             for target_idx in range(1, len(msgs), sample_stride):
                 target = msgs[target_idx]
                 response = one_line(target.text) if response_one_line else target.text.strip()

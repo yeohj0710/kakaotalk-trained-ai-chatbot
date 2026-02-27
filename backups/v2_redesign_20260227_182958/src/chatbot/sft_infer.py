@@ -31,7 +31,7 @@ def configure_console_io() -> None:
 
 
 def sanitize_text(text: str, one_line: bool, max_chars: int) -> str:
-    out = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    out = text.replace("\r\n", "\n").replace("\r", "\n")
     out = out.replace("\u00a0", " ").replace("\u200b", "")
     out = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", out)
     if one_line:
@@ -47,20 +47,33 @@ def strip_generation_artifacts(text: str) -> str:
     if not out:
         return ""
 
+    # If the model repeats the prompt scaffold, keep only the trailing answer span.
     if "[ANSWER]" in out:
         out = out.rsplit("[ANSWER]", 1)[-1].strip()
+
+    # Remove obvious meta/prompt markers.
     for marker in ("[SYSTEM]", "[TASK]", "[DIALOGUE]", "[ANSWER]"):
         idx = out.find(marker)
         if idx == 0:
             out = out[len(marker) :].strip()
         elif idx > 0:
             out = out[:idx].strip()
-    for marker in ("user:", "assistant:", "bot:", "사용자:", "봇:"):
-        idx = out.lower().find(marker)
+
+    # Cut if the model starts writing next turn/prefix labels.
+    for marker in ("사용자:", "assistant:", "user:", "[USER]", "[ASSISTANT]"):
+        idx = out.find(marker)
         if idx > 0:
             out = out[:idx].strip()
 
-    prefixes = ("답변:", "출력:", "assistant:", "bot:", "AI:")
+    # Strip leading labels that occasionally appear in chat data or prompt echoes.
+    prefixes = (
+        "답변:",
+        "대화:",
+        "출력:",
+        "assistant:",
+        "봇:",
+        "AI:",
+    )
     changed = True
     while changed and out:
         changed = False
@@ -71,10 +84,11 @@ def strip_generation_artifacts(text: str) -> str:
     return out
 
 
-MENTION_RE = re.compile(r"@[A-Za-z0-9_.\-가-힣]+")
-SUMMARY_BULLET_RE = re.compile(r"(?m)^\s*[·•\-]\s+")
-SUMMARY_HINT_RE = re.compile(r"(요약|정리|핵심|summary)", re.IGNORECASE)
-COMPARE_TEXT_RE = re.compile(r"[^A-Za-z0-9가-힣]+")
+MENTION_RE = re.compile(r"@[A-Za-z0-9_\-\.가-힣ㄱ-ㅎㅏ-ㅣ]+")
+SUMMARY_BULLET_RE = re.compile(r"[·•▪◦●]")
+SUMMARY_HINT_RE = re.compile(r"(요약|정리하면|요약하면|한줄요약|3줄요약|채팅봇|gpt\s*요약)", re.IGNORECASE)
+SUMMARY_PROSE_RE = re.compile(r"(라고\s*한다|다고\s*한다|하고\s*있다|했어요|였습니다)")
+COMPARE_TEXT_RE = re.compile(r"[^A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ]+")
 
 
 def trim_mentions(text: str, max_mentions: int) -> str:
@@ -95,7 +109,8 @@ def trim_mentions(text: str, max_mentions: int) -> str:
 
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\s*([,;:])\s*", r"\1 ", out)
-    return out.strip(" \t,;:")
+    out = re.sub(r"\s{2,}", " ", out).strip(" \t,;:")
+    return out
 
 
 def looks_like_summary_artifact(text: str) -> bool:
@@ -104,7 +119,9 @@ def looks_like_summary_artifact(text: str) -> bool:
         return False
     if len(SUMMARY_BULLET_RE.findall(out)) >= 1:
         return True
-    if SUMMARY_HINT_RE.search(out) and len(out) >= 20:
+    if SUMMARY_HINT_RE.search(out):
+        return True
+    if len(SUMMARY_PROSE_RE.findall(out)) >= 2 and len(out) >= 40:
         return True
     return False
 
@@ -113,10 +130,10 @@ def soften_summary_artifact(text: str) -> str:
     out = (text or "").strip()
     if not out:
         return out
-    out = SUMMARY_BULLET_RE.sub("", out)
-    out = re.sub(r"(요약|정리|핵심)\s*[:：]?", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"[ \t]{2,}", " ", out)
-    return out.strip(" \t,;:")
+    out = SUMMARY_BULLET_RE.sub(" ", out)
+    out = re.sub(r"(한줄요약|3줄요약|요약하면|정리하면|요약)\s*[:：]?", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"[ \t]{2,}", " ", out).strip(" \t,;:")
+    return out
 
 
 def normalize_compare_text(text: str) -> str:
@@ -193,6 +210,8 @@ def soften_repetitive_candidate(text: str) -> str:
             dedup.append(tok)
 
     out = " ".join(dedup).strip()
+    out = re.sub(r"(ㅋ){4,}", "ㅋㅋㅋ", out)
+    out = re.sub(r"(ㅎ){4,}", "ㅎㅎㅎ", out)
     out = re.sub(r"(.)\1{5,}", r"\1\1\1", out)
     return out.strip()
 
@@ -240,7 +259,7 @@ def find_latest_checkpoint_dir(run_dir: Path) -> Path | None:
             continue
         if not (path / "adapter_config.json").exists():
             continue
-        if not ((path / "adapter_model.safetensors").exists() or (path / "adapter_model.bin").exists()):
+        if not (path / "adapter_model.safetensors").exists():
             continue
         candidates.append((int(suffix), path))
     if not candidates:
@@ -272,18 +291,8 @@ def resolve_4bit_config(model_cfg: dict[str, Any], dtype: torch.dtype) -> Any | 
         return None
 
 
-def normalize_mode(raw: str) -> str:
-    mode = (raw or "").strip().lower()
-    if mode in {"1to1", "1:1", "one_to_one", "one-on-one", "single"}:
-        return "one_on_one"
-    if mode in {"group", "room"}:
-        return "group"
-    return "group"
-
-
 @dataclass
 class SFTInferOptions:
-    inference_mode: str
     max_new_tokens: int
     do_sample: bool
     temperature: float
@@ -296,17 +305,13 @@ class SFTInferOptions:
     avoid_repetitive_output: bool
     max_mentions: int
     max_history_turns: int
+    include_bot_history: bool
     max_bot_history_turns: int
     min_reply_chars: int
-    candidate_count: int
     regen_attempts: int
     one_line: bool
     max_chars: int
     use_chat_template: bool
-    group_min_user_turns_since_last_bot: int
-    group_max_bot_turns_in_window: int
-    group_block_consecutive_bot: bool
-    group_no_reply_token: str
 
 
 class SFTInferenceEngine:
@@ -333,7 +338,6 @@ class SFTInferenceEngine:
         env_path: str = ".env",
         adapter_path: str = "",
         run_name_override: str = "",
-        mode_override: str = "",
     ) -> "SFTInferenceEngine":
         ensure_hf_env_defaults()
         cfg = load_sft_config(config_path=config_sft, env_path=env_path)
@@ -343,7 +347,7 @@ class SFTInferenceEngine:
         gen_cfg = dict(cfg.get("generation", {}))
         prompt_cfg = dict(cfg.get("prompt", {}))
 
-        run_name = run_name_override or str(project_cfg.get("run_name", "room_lora_qwen25_7b_group_v2"))
+        run_name = run_name_override or str(project_cfg.get("run_name", "room_lora_qwen25_3b_base"))
         checkpoints_root = Path(str(paths_cfg.get("checkpoints_root", "checkpoints_lora")))
         run_dir = checkpoints_root / run_name
         status_json = Path(format_with_run_name(str(paths_cfg.get("status_json", "checkpoints_lora/{run_name}/status.json")), run_name))
@@ -364,22 +368,23 @@ class SFTInferenceEngine:
                     resolved_adapter = Path(best_from_status)
                 elif latest_from_status and Path(latest_from_status).exists():
                     resolved_adapter = Path(latest_from_status)
-
         if resolved_adapter is None or not resolved_adapter.exists():
             checkpoint_fallback = find_latest_checkpoint_dir(run_dir)
             if checkpoint_fallback is not None:
                 resolved_adapter = checkpoint_fallback
                 print(
                     json.dumps(
-                        {"event": "adapter_fallback_checkpoint", "adapter_dir": str(resolved_adapter.as_posix())},
+                        {
+                            "event": "adapter_fallback_checkpoint",
+                            "adapter_dir": str(resolved_adapter.as_posix()),
+                        },
                         ensure_ascii=False,
                     )
                 )
-
         if resolved_adapter is None or not resolved_adapter.exists():
             raise FileNotFoundError("No adapter checkpoint found. Train first.")
 
-        base_model = str(model_cfg.get("base_model", "Qwen/Qwen2.5-7B")).strip()
+        base_model = str(model_cfg.get("base_model", "Qwen/Qwen2.5-3B")).strip()
         trust_remote_code = bool(model_cfg.get("trust_remote_code", True))
         local_files_only = bool(model_cfg.get("local_files_only", False))
         dtype = resolve_torch_dtype(str(model_cfg.get("torch_dtype", "bfloat16")))
@@ -422,11 +427,7 @@ class SFTInferenceEngine:
         model = PeftModel.from_pretrained(base, str(resolved_adapter))
         model.eval()
 
-        configured_mode = normalize_mode(str(gen_cfg.get("inference_mode", "group")))
-        if mode_override:
-            configured_mode = normalize_mode(mode_override)
         options = SFTInferOptions(
-            inference_mode=configured_mode,
             max_new_tokens=int(gen_cfg.get("max_new_tokens", 96)),
             do_sample=bool(gen_cfg.get("do_sample", True)),
             temperature=float(gen_cfg.get("temperature", 0.85)),
@@ -438,18 +439,14 @@ class SFTInferenceEngine:
             avoid_self_echo=bool(gen_cfg.get("avoid_self_echo", True)),
             avoid_repetitive_output=bool(gen_cfg.get("avoid_repetitive_output", True)),
             max_mentions=int(gen_cfg.get("max_mentions", 0)),
-            max_history_turns=max(1, int(gen_cfg.get("max_history_turns", 8))),
+            max_history_turns=max(1, int(gen_cfg.get("max_history_turns", 16))),
+            include_bot_history=bool(gen_cfg.get("include_bot_history", True)),
             max_bot_history_turns=max(0, int(gen_cfg.get("max_bot_history_turns", 2))),
             min_reply_chars=max(1, int(gen_cfg.get("min_reply_chars", 8))),
-            candidate_count=max(1, int(gen_cfg.get("candidate_count", 3))),
             regen_attempts=max(0, int(gen_cfg.get("regen_attempts", 2))),
             one_line=bool(gen_cfg.get("one_line", True)),
             max_chars=max(1, int(gen_cfg.get("max_chars", 220))),
             use_chat_template=bool(gen_cfg.get("use_chat_template", False)),
-            group_min_user_turns_since_last_bot=max(0, int(gen_cfg.get("group_min_user_turns_since_last_bot", 4))),
-            group_max_bot_turns_in_window=max(0, int(gen_cfg.get("group_max_bot_turns_in_window", 2))),
-            group_block_consecutive_bot=bool(gen_cfg.get("group_block_consecutive_bot", True)),
-            group_no_reply_token=str(gen_cfg.get("group_no_reply_token", "<NO_REPLY>")),
         )
         system_prompt = str(prompt_cfg.get("system", "")).strip()
         task_prompt = str(prompt_cfg.get("task", "")).strip()
@@ -466,21 +463,26 @@ class SFTInferenceEngine:
         out = sanitize_text(text, one_line=True, max_chars=0)
         return out[:700].strip()
 
-    def _select_history(self, history: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        selected_rev: list[tuple[str, str]] = []
-        bot_left = self.options.max_bot_history_turns
-        for role, text in reversed(history):
-            if role == "bot" and bot_left <= 0:
-                continue
-            if role == "bot":
-                bot_left -= 1
-            selected_rev.append((role, text))
-            if len(selected_rev) >= self.options.max_history_turns:
-                break
-        return list(reversed(selected_rev))
-
     def _build_prompt(self, history: list[tuple[str, str]], new_user_input: str) -> str:
-        tail = self._select_history(history)
+        if self.options.include_bot_history:
+            user_left = self.options.max_history_turns
+            bot_left = self.options.max_bot_history_turns
+            selected_rev: list[tuple[str, str]] = []
+            for role, text in reversed(history):
+                if role == "bot":
+                    if bot_left <= 0:
+                        continue
+                    bot_left -= 1
+                else:
+                    if user_left <= 0:
+                        continue
+                    user_left -= 1
+                selected_rev.append((role, text))
+                if user_left <= 0 and bot_left <= 0:
+                    break
+            tail = list(reversed(selected_rev))
+        else:
+            tail = [(role, text) for role, text in history if role != "bot"][-self.options.max_history_turns :]
         if self.options.use_chat_template and hasattr(self.tokenizer, "apply_chat_template"):
             messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
             for role, text in tail:
@@ -493,9 +495,9 @@ class SFTInferenceEngine:
 
         lines: list[str] = []
         for role, text in tail:
-            speaker = "bot" if role == "bot" else "user"
+            speaker = "봇" if role == "bot" else "사용자"
             lines.append(f"{speaker}: {self._context_text(text)}")
-        lines.append(f"user: {self._context_text(new_user_input)}")
+        lines.append(f"사용자: {self._context_text(new_user_input)}")
         context_text = "\n".join(lines)
         return (
             f"[SYSTEM]\n{self.system_prompt}\n\n"
@@ -530,68 +532,29 @@ class SFTInferenceEngine:
         out = strip_generation_artifacts(cleaned)
         return trim_mentions(out, max_mentions=self.options.max_mentions)
 
-    def _score_candidate(self, candidate: str, history: list[tuple[str, str]]) -> tuple[int, str]:
-        score = 100
-        out = candidate
-        if len(out.replace(" ", "")) < self.options.min_reply_chars:
-            score -= 40
-        if self.options.avoid_summary_artifacts and looks_like_summary_artifact(out):
-            score -= 25
-            out = soften_summary_artifact(out)
-        if self.options.avoid_self_echo and is_self_echo_candidate(out, history):
-            score -= 30
-        if self.options.avoid_repetitive_output and is_repetitive_candidate(out):
-            score -= 30
-            out = soften_repetitive_candidate(out)
-        if not out:
-            score -= 100
-        return score, out
-
-    def generate_reply(self, history: list[tuple[str, str]], user_text: str) -> str:
-        prompt = self._build_prompt(history=history, new_user_input=user_text)
-        total_trials = max(1, self.options.candidate_count + self.options.regen_attempts)
-        best_score = -10_000
-        best_text = ""
-        for _ in range(total_trials):
-            candidate = self._generate_once(prompt)
-            score, normalized = self._score_candidate(candidate, history)
-            if score > best_score:
-                best_score = score
-                best_text = normalized
-            if score >= 100:
-                break
-        return best_text or "..."
-
-    def should_reply(self, history: list[tuple[str, str]], user_text: str) -> bool:
-        _ = user_text
-        if self.options.inference_mode != "group":
-            return True
-        if self.options.group_block_consecutive_bot and history and history[-1][0] == "bot":
-            return False
-
-        if self.options.group_min_user_turns_since_last_bot > 0:
-            user_since_last_bot = 0
-            for role, _text in reversed(history):
-                if role == "bot":
-                    break
-                user_since_last_bot += 1
-            if user_since_last_bot < self.options.group_min_user_turns_since_last_bot:
-                return False
-
-        if self.options.group_max_bot_turns_in_window > 0:
-            tail = history[-self.options.max_history_turns :]
-            bot_count = sum(1 for role, _text in tail if role == "bot")
-            if bot_count >= self.options.group_max_bot_turns_in_window:
-                return False
-        return True
-
-    def reply_or_skip(self, history: list[tuple[str, str]], user_text: str, force_reply: bool = False) -> tuple[bool, str]:
-        if force_reply or self.should_reply(history=history, user_text=user_text):
-            return True, self.generate_reply(history=history, user_text=user_text)
-        return False, self.options.group_no_reply_token
-
     def reply(self, history: list[tuple[str, str]], user_text: str) -> str:
-        return self.generate_reply(history=history, user_text=user_text)
+        prompt = self._build_prompt(history=history, new_user_input=user_text)
+        result = ""
+        for _ in range(self.options.regen_attempts + 1):
+            candidate = self._generate_once(prompt)
+            if len(candidate.replace(" ", "")) < self.options.min_reply_chars:
+                result = candidate
+                continue
+            if self.options.avoid_summary_artifacts and looks_like_summary_artifact(candidate):
+                result = candidate
+                continue
+            if self.options.avoid_self_echo and is_self_echo_candidate(candidate, history):
+                result = candidate
+                continue
+            if self.options.avoid_repetitive_output and is_repetitive_candidate(candidate):
+                result = candidate
+                continue
+            return candidate
+        if self.options.avoid_summary_artifacts and looks_like_summary_artifact(result):
+            result = soften_summary_artifact(result)
+        if self.options.avoid_repetitive_output and is_repetitive_candidate(result):
+            result = soften_repetitive_candidate(result)
+        return result or "..."
 
 
 def parse_password_arg(password: str) -> str | None:
@@ -607,7 +570,6 @@ def main() -> None:
     parser.add_argument("--env_path", default=".env")
     parser.add_argument("--adapter", default="")
     parser.add_argument("--run_name", default="")
-    parser.add_argument("--mode", default="one_on_one")
     parser.add_argument("--password", default="")
     args = parser.parse_args()
 
@@ -623,7 +585,6 @@ def main() -> None:
         env_path=args.env_path,
         adapter_path=args.adapter,
         run_name_override=args.run_name,
-        mode_override=args.mode,
     )
     out = engine.reply(history=[], user_text=args.message)
     print(out)

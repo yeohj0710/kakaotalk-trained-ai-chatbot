@@ -271,7 +271,7 @@ def resolve_4bit_config(model_cfg: dict[str, Any], dtype: torch.dtype) -> tuple[
 def prepare_model_and_tokenizer(cfg: dict[str, Any], init_adapter_path: str = "") -> tuple[Any, Any, dict[str, Any]]:
     model_cfg = dict(cfg.get("model", {}))
     lora_cfg = dict(cfg.get("lora", {}))
-    base_model = str(model_cfg.get("base_model", "Qwen/Qwen2.5-3B")).strip()
+    base_model = str(model_cfg.get("base_model", "Qwen/Qwen2.5-7B")).strip()
     trust_remote_code = bool(model_cfg.get("trust_remote_code", True))
     use_fast_tokenizer = bool(model_cfg.get("use_fast_tokenizer", True))
     dtype = resolve_torch_dtype(str(model_cfg.get("torch_dtype", "bfloat16")))
@@ -372,6 +372,7 @@ def main() -> None:
     parser.add_argument("--env_path", default=".env")
     parser.add_argument("--run_name", default="")
     parser.add_argument("--init_adapter", default="")
+    parser.add_argument("--allow_fresh_start", action="store_true")
     args = parser.parse_args()
 
     cfg = load_sft_config(config_path=args.config_sft, env_path=args.env_path)
@@ -380,7 +381,7 @@ def main() -> None:
     train_cfg = dict(cfg.get("training", {}))
     prompt_cfg = dict(cfg.get("prompt", {}))
 
-    run_name = (args.run_name or str(project_cfg.get("run_name", "room_lora_qwen25_3b_base"))).strip() or "room_lora_qwen25_3b_base"
+    run_name = (args.run_name or str(project_cfg.get("run_name", "room_lora_qwen25_7b_group_v2"))).strip() or "room_lora_qwen25_7b_group_v2"
     seed = int(project_cfg.get("seed", 42))
     ensure_hf_env_defaults()
     set_seed(seed)
@@ -391,17 +392,33 @@ def main() -> None:
     logs_dir = run_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     stop_file = run_dir / str(paths_cfg.get("stop_file_name", "STOP"))
+    run_meta_json = run_dir / "run_meta.json"
 
     train_jsonl = Path(format_with_run_name(str(paths_cfg.get("train_jsonl", "data/sft/train.jsonl")), run_name))
     val_jsonl = Path(format_with_run_name(str(paths_cfg.get("val_jsonl", "data/sft/val.jsonl")), run_name))
     status_json = Path(format_with_run_name(str(paths_cfg.get("status_json", "checkpoints_lora/{run_name}/status.json")), run_name))
     initial_resume_ckpt = find_latest_resumable_checkpoint(run_dir)
     init_adapter_used = ""
+    require_init_adapter_on_fresh_start = bool(train_cfg.get("require_init_adapter_on_fresh_start", False))
     if initial_resume_ckpt:
         if args.init_adapter:
             print(json.dumps({"event": "init_adapter_ignored", "reason": "resume_checkpoint_exists"}, ensure_ascii=False))
     else:
         init_adapter_used = str(args.init_adapter or "").strip()
+        if require_init_adapter_on_fresh_start and not init_adapter_used and not bool(args.allow_fresh_start):
+            raise RuntimeError(
+                "Refusing fresh SFT start without --init_adapter because training.require_init_adapter_on_fresh_start=true. "
+                "Provide --init_adapter <cpt_adapter_dir> or pass --allow_fresh_start explicitly."
+            )
+        fresh_meta = {
+            "event": "sft_run_initialized",
+            "stage": "sft",
+            "run_name": run_name,
+            "init_mode": "from_adapter" if init_adapter_used else "fresh_lora",
+            "init_adapter_path": init_adapter_used,
+            "created_at": now_iso(),
+        }
+        run_meta_json.write_text(json.dumps(fresh_meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     train_ds = load_json_dataset(train_jsonl, "train")
     val_ds = load_json_dataset(val_jsonl, "val")
@@ -558,6 +575,7 @@ def main() -> None:
         "stopped": stopped,
         "stop_reason": stop_reason,
         "forced_checkpoint": forced_checkpoint,
+        "run_meta_json": str(run_meta_json.as_posix()),
         "model_meta": model_meta,
     }
     status_json.parent.mkdir(parents=True, exist_ok=True)

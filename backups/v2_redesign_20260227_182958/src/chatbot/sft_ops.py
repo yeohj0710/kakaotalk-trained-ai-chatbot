@@ -59,8 +59,6 @@ def cmd_reply(args: argparse.Namespace) -> int:
         module_args.extend(["--adapter", args.adapter])
     if args.run_name:
         module_args.extend(["--run_name", args.run_name])
-    if args.mode:
-        module_args.extend(["--mode", args.mode])
     password = _resolve_password(args.config_sft, args.env_path, args.password)
     if password:
         module_args.extend(["--password", password])
@@ -79,8 +77,6 @@ def cmd_chat(args: argparse.Namespace) -> int:
         module_args.extend(["--adapter", args.adapter])
     if args.run_name:
         module_args.extend(["--run_name", args.run_name])
-    if args.mode:
-        module_args.extend(["--mode", args.mode])
     password = _resolve_password(args.config_sft, args.env_path, args.password)
     if password:
         module_args.extend(["--password", password])
@@ -98,8 +94,6 @@ def cmd_smoke(args: argparse.Namespace) -> int:
         module_args.extend(["--adapter", args.adapter])
     if args.run_name:
         module_args.extend(["--run_name", args.run_name])
-    if args.mode:
-        module_args.extend(["--mode", args.mode])
     password = _resolve_password(args.config_sft, args.env_path, args.password)
     if password:
         module_args.extend(["--password", password])
@@ -121,8 +115,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
         module_args.extend(["--adapter", args.adapter])
     if args.run_name:
         module_args.extend(["--run_name", args.run_name])
-    if args.mode:
-        module_args.extend(["--mode", args.mode])
     return _run_module("chatbot.web_api", module_args)
 
 
@@ -156,7 +148,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_reply.add_argument("--env_path", default=".env")
     p_reply.add_argument("--adapter", default="")
     p_reply.add_argument("--run_name", default="")
-    p_reply.add_argument("--mode", default="one_on_one")
     p_reply.add_argument("--password", default="")
     p_reply.set_defaults(func=cmd_reply)
 
@@ -165,7 +156,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--env_path", default=".env")
     p_chat.add_argument("--adapter", default="")
     p_chat.add_argument("--run_name", default="")
-    p_chat.add_argument("--mode", default="")
     p_chat.add_argument("--password", default="")
     p_chat.set_defaults(func=cmd_chat)
 
@@ -174,7 +164,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_smoke.add_argument("--env_path", default=".env")
     p_smoke.add_argument("--adapter", default="")
     p_smoke.add_argument("--run_name", default="")
-    p_smoke.add_argument("--mode", default="one_on_one")
     p_smoke.add_argument("--password", default="")
     p_smoke.set_defaults(func=cmd_smoke)
 
@@ -185,7 +174,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--env_path", default=".env")
     p_serve.add_argument("--adapter", default="")
     p_serve.add_argument("--run_name", default="")
-    p_serve.add_argument("--mode", default="")
     p_serve.set_defaults(func=cmd_serve)
     return parser
 

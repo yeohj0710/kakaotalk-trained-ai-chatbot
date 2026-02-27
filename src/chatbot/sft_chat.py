@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("--env_path", default=".env")
     parser.add_argument("--adapter", default="")
     parser.add_argument("--run_name", default="")
+    parser.add_argument("--mode", default="")
     parser.add_argument("--password", default="")
     args = parser.parse_args()
 
@@ -29,9 +30,11 @@ def main() -> None:
         env_path=args.env_path,
         adapter_path=args.adapter,
         run_name_override=args.run_name,
+        mode_override=args.mode,
     )
     history: list[tuple[str, str]] = []
     print(f"[ready] adapter={engine.adapter_dir}")
+    print(f"[mode] {engine.options.inference_mode}")
     print("Type /reset or /exit")
 
     while True:
@@ -51,10 +54,14 @@ def main() -> None:
             print("history cleared")
             continue
 
-        reply = engine.reply(history=history, user_text=user)
-        print(reply)
+        replied, reply = engine.reply_or_skip(history=history, user_text=user)
+        if replied:
+            print(reply)
+        else:
+            print(engine.options.group_no_reply_token)
         history.append(("user", user))
-        history.append(("bot", reply))
+        if replied:
+            history.append(("bot", reply))
 
 
 if __name__ == "__main__":

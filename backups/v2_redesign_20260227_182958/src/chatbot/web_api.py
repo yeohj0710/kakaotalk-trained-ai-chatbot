@@ -26,7 +26,6 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    should_reply: bool
     adapter: str
 
 
@@ -36,7 +35,6 @@ class AppState:
     env_path: str
     adapter_path: str
     run_name: str
-    mode: str
     cfg: dict[str, Any]
     engine: SFTInferenceEngine | None
     engine_lock: threading.Lock
@@ -48,7 +46,6 @@ def create_app(
     env_path: str = ".env",
     adapter_path: str = "",
     run_name: str = "",
-    mode: str = "",
 ) -> FastAPI:
     cfg = load_sft_config(config_path=config_sft, env_path=env_path)
     state = AppState(
@@ -56,7 +53,6 @@ def create_app(
         env_path=env_path,
         adapter_path=adapter_path,
         run_name=run_name,
-        mode=mode,
         cfg=cfg,
         engine=None,
         engine_lock=threading.Lock(),
@@ -85,7 +81,6 @@ def create_app(
                     env_path=st.env_path,
                     adapter_path=st.adapter_path,
                     run_name_override=st.run_name,
-                    mode_override=st.mode,
                 )
             return st.engine
 
@@ -106,8 +101,8 @@ def create_app(
             engine = get_engine()
             history = [(item.role, item.text) for item in payload.history if item.text.strip()]
             with get_state().generation_lock:
-                should_reply, reply = engine.reply_or_skip(history=history, user_text=payload.message.strip())
-            return ChatResponse(reply=reply, should_reply=should_reply, adapter=str(engine.adapter_dir))
+                reply = engine.reply(history=history, user_text=payload.message.strip())
+            return ChatResponse(reply=reply, adapter=str(engine.adapter_dir))
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -125,7 +120,6 @@ def main() -> None:
     parser.add_argument("--env_path", default=".env")
     parser.add_argument("--adapter", default="")
     parser.add_argument("--run_name", default="")
-    parser.add_argument("--mode", default="")
     args = parser.parse_args()
 
     app = create_app(
@@ -133,7 +127,6 @@ def main() -> None:
         env_path=args.env_path,
         adapter_path=args.adapter,
         run_name=args.run_name,
-        mode=args.mode,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

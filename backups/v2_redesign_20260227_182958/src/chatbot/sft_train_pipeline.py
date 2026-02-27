@@ -53,16 +53,6 @@ def load_status(cfg: dict, run_name: str) -> dict:
         return {}
 
 
-def load_run_meta(run_dir: Path) -> dict:
-    meta_path = run_dir / "run_meta.json"
-    if not meta_path.exists():
-        return {}
-    try:
-        return json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Two-stage training pipeline (CPT -> SFT) with auto-resume.")
     parser.add_argument("--config_sft", default="configs/sft.yaml")
@@ -74,7 +64,7 @@ def main() -> None:
     paths_cfg = dict(cfg.get("paths", {}))
     pipeline_cfg = dict(cfg.get("pipeline", {}))
 
-    run_name = str(project_cfg.get("run_name", "room_lora_qwen25_7b_group_v2")).strip() or "room_lora_qwen25_7b_group_v2"
+    run_name = str(project_cfg.get("run_name", "room_lora_qwen25_3b_base")).strip() or "room_lora_qwen25_3b_base"
     checkpoints_root = Path(str(paths_cfg.get("checkpoints_root", "checkpoints_lora")))
     sft_run_dir = checkpoints_root / run_name
     sft_last_ckpt = get_last_checkpoint(str(sft_run_dir)) if sft_run_dir.exists() else None
@@ -84,26 +74,8 @@ def main() -> None:
     bootstrap_sft_from_cpt = bool(pipeline_cfg.get("bootstrap_sft_from_cpt", True))
     skip_cpt_if_sft_has_checkpoint = bool(pipeline_cfg.get("skip_cpt_if_sft_has_checkpoint", True))
     require_cpt_complete_before_sft = bool(pipeline_cfg.get("require_cpt_complete_before_sft", True))
-    fail_if_sft_bootstrap_missing = bool(pipeline_cfg.get("fail_if_sft_bootstrap_missing", True))
-    fail_if_existing_sft_run_is_fresh = bool(pipeline_cfg.get("fail_if_existing_sft_run_is_fresh", True))
     cpt_suffix = str(pipeline_cfg.get("cpt_run_name_suffix", "_cpt"))
     cpt_run_name = f"{run_name}{cpt_suffix}"
-
-    if sft_last_ckpt and bootstrap_sft_from_cpt and fail_if_existing_sft_run_is_fresh:
-        sft_meta = load_run_meta(sft_run_dir)
-        if str(sft_meta.get("init_mode", "")).strip().lower() == "fresh_lora":
-            print(
-                json.dumps(
-                    {
-                        "event": "pipeline_abort",
-                        "reason": "existing_sft_run_initialized_as_fresh_lora",
-                        "run_name": run_name,
-                        "hint": "Use a new run_name for CPT-bootstrapped SFT, or disable fail_if_existing_sft_run_is_fresh.",
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            raise SystemExit(2)
 
     if pipeline_enabled and run_cpt_first and not (skip_cpt_if_sft_has_checkpoint and sft_last_ckpt):
         cpt_code = run_module(
@@ -144,18 +116,6 @@ def main() -> None:
             print(json.dumps({"event": "sft_bootstrap_from_cpt", "init_adapter": init_adapter}, ensure_ascii=False))
         else:
             print(json.dumps({"event": "sft_bootstrap_missing", "run_name": cpt_run_name}, ensure_ascii=False))
-            if fail_if_sft_bootstrap_missing:
-                print(
-                    json.dumps(
-                        {
-                            "event": "pipeline_abort",
-                            "reason": "missing_cpt_adapter_for_sft_bootstrap",
-                            "hint": "Run CPT first or set pipeline.fail_if_sft_bootstrap_missing=false explicitly.",
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-                raise SystemExit(2)
 
     sft_code = run_module("chatbot.sft_train", sft_args)
     raise SystemExit(sft_code)
