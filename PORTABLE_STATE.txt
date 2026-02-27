@@ -1,18 +1,23 @@
 # PORTABLE_STATE.txt
-Single Source of Truth for moving/resuming this project on another machine.
 
-[Latest detailed handoff]
-- See: RUNBOOK_TOMORROW_2026-02-26.md
-- Includes exact terminal-by-terminal startup, tunnel, Vercel env, and troubleshooting.
+Single-source snapshot for moving or resuming this project on another machine.
 
-[Current Architecture]
-- Base model: Qwen/Qwen2.5-3B
-- Training: 2-stage LoRA (CPT -> SFT)
+[Current defaults]
+- Base model: Qwen/Qwen2.5-7B
+- Training pipeline: CPT -> SFT
 - Main config: configs/sft.yaml
-- Default run: room_lora_qwen25_3b_base
+- Default run: room_lora_qwen25_7b_group_v2
+- Default CPT run: room_lora_qwen25_7b_group_v2_cpt
 
-[Required for training resume]
-1) Code + config
+[Docs]
+- README.md
+- docs/RUNBOOK.md
+- docs/COMMANDS.md
+- docs/ARCHITECTURE.md
+- docs/archive/RUNBOOK_TOMORROW_2026-02-26.md (legacy archive)
+
+[Required for full training resume]
+1) Code and config
 - configs/sft.yaml
 - .env
 
@@ -35,27 +40,16 @@ Single Source of Truth for moving/resuming this project on another machine.
 - .env
 - checkpoints_lora/<run_name>/adapter_best (or latest checkpoint dir)
 
-[Environment variables]
+[Environment]
 - CHATBOT_PASSWORD=...
 
-[One-line commands]
-- Organize raw txt:   python -m chatbot.sft_ops organize
-- Preprocess:         python -m chatbot.sft_ops preprocess
-- Train/resume:       python -m chatbot.sft_ops train
-- Reply:              python -m chatbot.sft_ops reply "테스트"
-- Chat:               python -m chatbot.sft_ops chat
-- Smoke test:         python -m chatbot.sft_ops smoke
-- API server:         python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000
+[Core commands]
+- Preprocess: python -m chatbot.sft_ops preprocess --config_sft configs/sft.yaml --env_path .env
+- CPT train/resume: python -m chatbot.sft_cpt_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2_cpt
+- SFT first start: python -m chatbot.sft_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --init_adapter checkpoints_lora/room_lora_qwen25_7b_group_v2_cpt/adapter_best
+- SFT resume: python -m chatbot.sft_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2
 
 [Resume behavior]
-- Stop: Ctrl+C or STOP file in run dir
-- Resume: same train command
-- Pipeline order: CPT complete -> SFT
-
-[Checkpoint policy]
-- save_steps: 500 (frequent checkpoint for quick testing)
-- eval_steps: CPT=8000, SFT=5000 (infrequent eval for speed)
-
-[Practical notes]
-- First run downloads base model from Hugging Face.
-- If bitsandbytes is unavailable, 4bit may fallback to full precision (slower, more VRAM).
+- Stop: Ctrl+C or STOP file in run directory
+- Resume: same command, same run_name
+- Resume source: latest valid checkpoint with required trainer files
