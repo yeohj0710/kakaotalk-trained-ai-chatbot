@@ -49,6 +49,46 @@ def ensure_hf_env_defaults() -> None:
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 
+def checkpoint_step(path: Path) -> int:
+    try:
+        return int(path.name.replace("checkpoint-", "", 1))
+    except ValueError:
+        return -1
+
+
+def is_resumable_checkpoint(ckpt_dir: Path) -> tuple[bool, list[str]]:
+    missing: list[str] = []
+    if not (ckpt_dir / "trainer_state.json").exists():
+        missing.append("trainer_state.json")
+    if not (ckpt_dir / "adapter_config.json").exists():
+        missing.append("adapter_config.json")
+    if not ((ckpt_dir / "adapter_model.safetensors").exists() or (ckpt_dir / "adapter_model.bin").exists()):
+        missing.append("adapter_model.(safetensors|bin)")
+    return (len(missing) == 0, missing)
+
+
+def find_latest_resumable_checkpoint(run_dir: Path) -> str | None:
+    if not run_dir.exists():
+        return None
+    candidates = sorted((p for p in run_dir.glob("checkpoint-*") if p.is_dir()), key=checkpoint_step, reverse=True)
+    for ckpt in candidates:
+        ok, missing = is_resumable_checkpoint(ckpt)
+        if ok:
+            return str(ckpt)
+        print(
+            json.dumps(
+                {
+                    "event": "resume_checkpoint_skipped_invalid",
+                    "stage": "cpt",
+                    "checkpoint": str(ckpt),
+                    "missing": missing,
+                },
+                ensure_ascii=False,
+            )
+        )
+    return None
+
+
 def retry_hf_load(fn, attempts: int = 4, base_wait_sec: float = 3.0):
     last_error: Exception | None = None
     for idx in range(attempts):
@@ -428,7 +468,7 @@ def main() -> None:
         callbacks=callbacks,
     )
 
-    last_ckpt = get_last_checkpoint(str(run_dir)) if run_dir.exists() else None
+    last_ckpt = find_latest_resumable_checkpoint(run_dir)
     resume_ckpt = last_ckpt if last_ckpt else None
     if resume_ckpt and args.init_adapter:
         print(json.dumps({"event": "init_adapter_ignored", "stage": "cpt", "reason": "resume_checkpoint_exists"}, ensure_ascii=False))

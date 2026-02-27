@@ -143,12 +143,16 @@ generation:
   top_p: 0.92
   top_k: 50
   repetition_penalty: 1.05
+  no_repeat_ngram_size: 4
   avoid_summary_artifacts: true
+  avoid_self_echo: true
+  avoid_repetitive_output: true
   max_mentions: 0
   max_history_turns: 8
   include_bot_history: true
+  max_bot_history_turns: 8
   min_reply_chars: 8
-  regen_attempts: 2
+  regen_attempts: 4
   one_line: true
   max_chars: 220
   use_chat_template: false

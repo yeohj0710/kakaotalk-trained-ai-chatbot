@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import re
 import sys
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +88,7 @@ MENTION_RE = re.compile(r"@[A-Za-z0-9_\-\.가-힣ㄱ-ㅎㅏ-ㅣ]+")
 SUMMARY_BULLET_RE = re.compile(r"[·•▪◦●]")
 SUMMARY_HINT_RE = re.compile(r"(요약|정리하면|요약하면|한줄요약|3줄요약|채팅봇|gpt\s*요약)", re.IGNORECASE)
 SUMMARY_PROSE_RE = re.compile(r"(라고\s*한다|다고\s*한다|하고\s*있다|했어요|였습니다)")
+COMPARE_TEXT_RE = re.compile(r"[^A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ]+")
 
 
 def trim_mentions(text: str, max_mentions: int) -> str:
@@ -131,6 +134,86 @@ def soften_summary_artifact(text: str) -> str:
     out = re.sub(r"(한줄요약|3줄요약|요약하면|정리하면|요약)\s*[:：]?", "", out, flags=re.IGNORECASE)
     out = re.sub(r"[ \t]{2,}", " ", out).strip(" \t,;:")
     return out
+
+
+def normalize_compare_text(text: str) -> str:
+    out = (text or "").lower()
+    out = COMPARE_TEXT_RE.sub("", out)
+    return out.strip()
+
+
+def is_self_echo_candidate(candidate: str, history: list[tuple[str, str]]) -> bool:
+    cand = normalize_compare_text(candidate)
+    if len(cand) < 8:
+        return False
+
+    last_bot = ""
+    for role, text in reversed(history):
+        if role == "bot":
+            last_bot = text
+            break
+    if not last_bot:
+        return False
+
+    prev = normalize_compare_text(last_bot)
+    if len(prev) < 8:
+        return False
+    if cand == prev:
+        return True
+    if len(cand) >= 12 and (cand in prev or prev in cand):
+        return True
+    return SequenceMatcher(None, cand, prev).ratio() >= 0.9
+
+
+def is_repetitive_candidate(text: str) -> bool:
+    out = (text or "").strip()
+    if not out:
+        return False
+
+    compact = re.sub(r"\s+", "", out)
+    if re.search(r"(.{2,16})(?:\1){2,}", compact):
+        return True
+
+    tokens = out.split()
+    if len(tokens) < 10:
+        return False
+
+    unique_ratio = len(set(tokens)) / max(1, len(tokens))
+    if unique_ratio < 0.55:
+        return True
+
+    for n in (2, 3):
+        if len(tokens) < n * 3:
+            continue
+        ngrams = [tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
+        top_count = Counter(ngrams).most_common(1)[0][1]
+        if top_count >= 3 and top_count >= int(len(ngrams) * 0.5):
+            return True
+    return False
+
+
+def soften_repetitive_candidate(text: str) -> str:
+    tokens = (text or "").split()
+    if not tokens:
+        return (text or "").strip()
+
+    dedup: list[str] = []
+    prev = ""
+    run = 0
+    for tok in tokens:
+        if tok == prev:
+            run += 1
+        else:
+            prev = tok
+            run = 1
+        if run <= 2:
+            dedup.append(tok)
+
+    out = " ".join(dedup).strip()
+    out = re.sub(r"(ㅋ){4,}", "ㅋㅋㅋ", out)
+    out = re.sub(r"(ㅎ){4,}", "ㅎㅎㅎ", out)
+    out = re.sub(r"(.)\1{5,}", r"\1\1\1", out)
+    return out.strip()
 
 
 def resolve_torch_dtype(name: str) -> torch.dtype:
@@ -216,10 +299,14 @@ class SFTInferOptions:
     top_p: float
     top_k: int
     repetition_penalty: float
+    no_repeat_ngram_size: int
     avoid_summary_artifacts: bool
+    avoid_self_echo: bool
+    avoid_repetitive_output: bool
     max_mentions: int
     max_history_turns: int
     include_bot_history: bool
+    max_bot_history_turns: int
     min_reply_chars: int
     regen_attempts: int
     one_line: bool
@@ -347,10 +434,14 @@ class SFTInferenceEngine:
             top_p=float(gen_cfg.get("top_p", 0.92)),
             top_k=int(gen_cfg.get("top_k", 50)),
             repetition_penalty=float(gen_cfg.get("repetition_penalty", 1.05)),
+            no_repeat_ngram_size=max(0, int(gen_cfg.get("no_repeat_ngram_size", 4))),
             avoid_summary_artifacts=bool(gen_cfg.get("avoid_summary_artifacts", True)),
+            avoid_self_echo=bool(gen_cfg.get("avoid_self_echo", True)),
+            avoid_repetitive_output=bool(gen_cfg.get("avoid_repetitive_output", True)),
             max_mentions=int(gen_cfg.get("max_mentions", 0)),
             max_history_turns=max(1, int(gen_cfg.get("max_history_turns", 16))),
             include_bot_history=bool(gen_cfg.get("include_bot_history", True)),
+            max_bot_history_turns=max(0, int(gen_cfg.get("max_bot_history_turns", 2))),
             min_reply_chars=max(1, int(gen_cfg.get("min_reply_chars", 8))),
             regen_attempts=max(0, int(gen_cfg.get("regen_attempts", 2))),
             one_line=bool(gen_cfg.get("one_line", True)),
@@ -374,7 +465,22 @@ class SFTInferenceEngine:
 
     def _build_prompt(self, history: list[tuple[str, str]], new_user_input: str) -> str:
         if self.options.include_bot_history:
-            tail = history[-(self.options.max_history_turns * 2) :]
+            user_left = self.options.max_history_turns
+            bot_left = self.options.max_bot_history_turns
+            selected_rev: list[tuple[str, str]] = []
+            for role, text in reversed(history):
+                if role == "bot":
+                    if bot_left <= 0:
+                        continue
+                    bot_left -= 1
+                else:
+                    if user_left <= 0:
+                        continue
+                    user_left -= 1
+                selected_rev.append((role, text))
+                if user_left <= 0 and bot_left <= 0:
+                    break
+            tail = list(reversed(selected_rev))
         else:
             tail = [(role, text) for role, text in history if role != "bot"][-self.options.max_history_turns :]
         if self.options.use_chat_template and hasattr(self.tokenizer, "apply_chat_template"):
@@ -404,18 +510,21 @@ class SFTInferenceEngine:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         if torch.cuda.is_available():
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": self.options.max_new_tokens,
+            "do_sample": self.options.do_sample,
+            "repetition_penalty": self.options.repetition_penalty,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": self.tokenizer.pad_token_id,
+        }
+        if self.options.do_sample:
+            gen_kwargs["temperature"] = self.options.temperature
+            gen_kwargs["top_p"] = self.options.top_p
+            gen_kwargs["top_k"] = self.options.top_k
+        if self.options.no_repeat_ngram_size > 0:
+            gen_kwargs["no_repeat_ngram_size"] = self.options.no_repeat_ngram_size
         with torch.no_grad():
-            output = self.model.generate(
-                **inputs,
-                max_new_tokens=self.options.max_new_tokens,
-                do_sample=self.options.do_sample,
-                temperature=self.options.temperature,
-                top_p=self.options.top_p,
-                top_k=self.options.top_k,
-                repetition_penalty=self.options.repetition_penalty,
-                eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
+            output = self.model.generate(**inputs, **gen_kwargs)
         prompt_len = inputs["input_ids"].shape[1]
         generated_ids = output[0][prompt_len:]
         raw = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -434,9 +543,17 @@ class SFTInferenceEngine:
             if self.options.avoid_summary_artifacts and looks_like_summary_artifact(candidate):
                 result = candidate
                 continue
+            if self.options.avoid_self_echo and is_self_echo_candidate(candidate, history):
+                result = candidate
+                continue
+            if self.options.avoid_repetitive_output and is_repetitive_candidate(candidate):
+                result = candidate
+                continue
             return candidate
         if self.options.avoid_summary_artifacts and looks_like_summary_artifact(result):
             result = soften_summary_artifact(result)
+        if self.options.avoid_repetitive_output and is_repetitive_candidate(result):
+            result = soften_repetitive_candidate(result)
         return result or "..."
 
 
