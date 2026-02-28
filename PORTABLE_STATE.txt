@@ -14,7 +14,6 @@ Single-source snapshot for moving or resuming this project on another machine.
 - docs/RUNBOOK.md
 - docs/COMMANDS.md
 - docs/ARCHITECTURE.md
-- docs/archive/RUNBOOK_TOMORROW_2026-02-26.md (legacy archive)
 
 [Required for full training resume]
 1) Code and config

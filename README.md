@@ -80,4 +80,4 @@ python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000 --config_sft config
 - Operations runbook: `docs/RUNBOOK.md`
 - Command quick reference: `docs/COMMANDS.md`
 - Architecture and safeguards: `docs/ARCHITECTURE.md`
-- Old archived notes: `docs/archive/`
+- Cleanup record: `docs/CLEANUP.md`
