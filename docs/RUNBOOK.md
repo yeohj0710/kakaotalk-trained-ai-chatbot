@@ -99,3 +99,14 @@ python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --a
 python -m compileall src/chatbot
 python -m chatbot.sft_ops smoke --config_sft configs/sft.yaml --env_path .env --mode one_on_one
 ```
+
+## 10) Kakao Desktop Bridge (Optional)
+Calibrate points with mouse + SPACE:
+```bash
+python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --calibrate --save_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇"
+```
+
+Run with auto-send:
+```bash
+python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --load_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇" --send
+```

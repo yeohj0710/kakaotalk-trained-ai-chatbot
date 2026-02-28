@@ -126,6 +126,64 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return _run_module("chatbot.web_api", module_args)
 
 
+def cmd_bridge(args: argparse.Namespace) -> int:
+    module_args = [
+        "--config_sft",
+        args.config_sft,
+        "--env_path",
+        args.env_path,
+    ]
+    if args.adapter:
+        module_args.extend(["--adapter", args.adapter])
+    if args.run_name:
+        module_args.extend(["--run_name", args.run_name])
+    if args.mode:
+        module_args.extend(["--mode", args.mode])
+    password = _resolve_password(args.config_sft, args.env_path, args.password)
+    if password:
+        module_args.extend(["--password", password])
+
+    scalar_pairs = [
+        ("--poll_sec", args.poll_sec),
+        ("--drag_start", args.drag_start),
+        ("--drag_end", args.drag_end),
+        ("--input_xy", args.input_xy),
+        ("--window_title", args.window_title),
+        ("--drag_duration", args.drag_duration),
+        ("--copy_wait_sec", args.copy_wait_sec),
+        ("--load_calibration", args.load_calibration),
+        ("--save_calibration", args.save_calibration),
+        ("--bot_name", args.bot_name),
+        ("--history_limit", args.history_limit),
+        ("--seed_messages", args.seed_messages),
+        ("--seen_buffer_size", args.seen_buffer_size),
+        ("--max_replies_per_cycle", args.max_replies_per_cycle),
+        ("--min_send_interval_sec", args.min_send_interval_sec),
+        ("--max_sends_per_hour", args.max_sends_per_hour),
+        ("--stop_file", args.stop_file),
+    ]
+    for flag, value in scalar_pairs:
+        if value in ("", None):
+            continue
+        module_args.extend([flag, str(value)])
+
+    for speaker in args.ignore_speaker:
+        module_args.extend(["--ignore_speaker", speaker])
+
+    if args.calibrate:
+        module_args.append("--calibrate")
+    if args.send:
+        module_args.append("--send")
+    if args.no_enter:
+        module_args.append("--no_enter")
+    if args.no_speaker_prefix:
+        module_args.append("--no_speaker_prefix")
+    if args.print_snapshot_size:
+        module_args.append("--print_snapshot_size")
+
+    return _run_module("chatbot.sft_bridge", module_args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified CLI for SFT/LoRA chatbot pipeline.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -187,6 +245,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--run_name", default="")
     p_serve.add_argument("--mode", default="")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_bridge = sub.add_parser("bridge")
+    p_bridge.add_argument("--config_sft", default="configs/sft.yaml")
+    p_bridge.add_argument("--env_path", default=".env")
+    p_bridge.add_argument("--adapter", default="")
+    p_bridge.add_argument("--run_name", default="")
+    p_bridge.add_argument("--mode", default="group")
+    p_bridge.add_argument("--password", default="")
+    p_bridge.add_argument("--poll_sec", type=float, default=5.0)
+    p_bridge.add_argument("--drag_start", default="")
+    p_bridge.add_argument("--drag_end", default="")
+    p_bridge.add_argument("--input_xy", default="")
+    p_bridge.add_argument("--window_title", default="")
+    p_bridge.add_argument("--drag_duration", type=float, default=0.18)
+    p_bridge.add_argument("--copy_wait_sec", type=float, default=0.10)
+    p_bridge.add_argument("--load_calibration", default="")
+    p_bridge.add_argument("--save_calibration", default="")
+    p_bridge.add_argument("--calibrate", action="store_true")
+    p_bridge.add_argument("--send", action="store_true")
+    p_bridge.add_argument("--no_enter", action="store_true")
+    p_bridge.add_argument("--bot_name", default="")
+    p_bridge.add_argument("--ignore_speaker", action="append", default=[])
+    p_bridge.add_argument("--no_speaker_prefix", action="store_true")
+    p_bridge.add_argument("--history_limit", type=int, default=80)
+    p_bridge.add_argument("--seed_messages", type=int, default=24)
+    p_bridge.add_argument("--seen_buffer_size", type=int, default=2000)
+    p_bridge.add_argument("--max_replies_per_cycle", type=int, default=1)
+    p_bridge.add_argument("--min_send_interval_sec", type=float, default=12.0)
+    p_bridge.add_argument("--max_sends_per_hour", type=int, default=40)
+    p_bridge.add_argument("--stop_file", default="")
+    p_bridge.add_argument("--print_snapshot_size", action="store_true")
+    p_bridge.set_defaults(func=cmd_bridge)
     return parser
 
 

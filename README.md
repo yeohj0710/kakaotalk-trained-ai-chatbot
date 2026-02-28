@@ -71,6 +71,12 @@ python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --m
 python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000 --config_sft configs/sft.yaml --env_path .env --mode group
 ```
 
+## Kakao Desktop Bridge (Optional)
+Calibrate once, then poll chat area and auto-reply when model decides to speak:
+```bash
+python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --calibrate --save_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --send
+```
+
 ## Stop and Resume
 - Stop: `Ctrl+C` or create `STOP` in run directory.
 - Resume: run the same train command again.

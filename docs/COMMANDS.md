@@ -27,6 +27,17 @@ python -m chatbot.sft_ops smoke --config_sft configs/sft.yaml --env_path .env --
 python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000 --config_sft configs/sft.yaml --env_path .env --mode group
 ```
 
+## Kakao Desktop Bridge
+Calibrate 3 points (drag start, drag end, input box), then run in dry-run:
+```bash
+python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --calibrate --save_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇"
+```
+
+Enable real sending:
+```bash
+python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --load_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇" --send
+```
+
 ## Checkpoint Shortcuts
 Git Bash latest checkpoint:
 ```bash
