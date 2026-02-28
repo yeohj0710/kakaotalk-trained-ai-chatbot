@@ -566,6 +566,8 @@ def main() -> None:
                 continue
 
             replies_this_cycle = 0
+            cycle_limit_notified = False
+            reply_cap = max(1, int(args.max_replies_per_cycle))
             for msg in new_messages:
                 if msg.speaker in ignore_speakers:
                     continue
@@ -578,10 +580,16 @@ def main() -> None:
                     text=msg.text,
                     include_speaker_prefix=bool(args.include_speaker_prefix),
                 )
+                print(f"[in ] {msg.text}")
+                if replies_this_cycle >= reply_cap:
+                    history.append(("user", user_turn))
+                    if not cycle_limit_notified:
+                        print("[skip] max_replies_per_cycle reached; remaining messages are context-only this cycle")
+                        cycle_limit_notified = True
+                    continue
+
                 should_reply, reply = engine.reply_or_skip(history=list(history), user_text=user_turn)
                 history.append(("user", user_turn))
-
-                print(f"[in ] {msg.text}")
 
                 if not should_reply:
                     print(f"[skip] {engine.options.group_no_reply_token}")
@@ -589,9 +597,6 @@ def main() -> None:
                 reply = normalize_model_reply(reply)
                 if not reply or reply == engine.options.group_no_reply_token:
                     print(f"[skip] {engine.options.group_no_reply_token}")
-                    continue
-                if replies_this_cycle >= max(1, int(args.max_replies_per_cycle)):
-                    print("[스킵] 이번 사이클 최대 응답 횟수 도달")
                     continue
 
                 now = time.time()
