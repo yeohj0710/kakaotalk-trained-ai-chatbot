@@ -180,6 +180,8 @@ def cmd_bridge(args: argparse.Namespace) -> int:
         module_args.append("--no_speaker_prefix")
     if args.print_snapshot_size:
         module_args.append("--print_snapshot_size")
+    if args.no_initial_reply:
+        module_args.append("--no_initial_reply")
 
     return _run_module("chatbot.sft_bridge", module_args)
 
@@ -276,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bridge.add_argument("--max_sends_per_hour", type=int, default=40)
     p_bridge.add_argument("--stop_file", default="")
     p_bridge.add_argument("--print_snapshot_size", action="store_true")
+    p_bridge.add_argument("--no_initial_reply", action="store_true")
     p_bridge.set_defaults(func=cmd_bridge)
     return parser
 

@@ -17,10 +17,13 @@ from .sft_config import load_sft_config
 from .sft_infer import SFTInferenceEngine, configure_console_io
 
 
-DATE_LINE_RE = re.compile(r"^\s*(?P<y>\d{4})년\s*(?P<m>\d{1,2})월\s*(?P<d>\d{1,2})일(?:\s+\S+)?\s*$")
-MESSAGE_START_RE = re.compile(
-    r"^\[(?P<speaker>[^\]]+)\]\s+\[(?P<ampm>오전|오후)\s+(?P<hm>\d{1,2}:\d{2})\]\s*(?P<text>.*)$"
+DATE_LINE_RE = re.compile(
+    r"^\s*(?P<y>\d{4})\uB144\s*(?P<m>\d{1,2})\uC6D4\s*(?P<d>\d{1,2})\uC77C(?:\s+\S+)?\s*$"
 )
+MESSAGE_START_RE = re.compile(
+    r"^\[(?P<speaker>[^\]]+)\]\s+\[(?P<ampm>\uC624\uC804|\uC624\uD6C4)\s+(?P<hm>\d{1,2}:\d{2})\]\s*(?P<text>.*)$"
+)
+LEADING_SPEAKER_RE = re.compile(r"^\s*(?:\[[^\]\n]{1,24}\]|[@A-Za-z0-9_.\-가-힣]{1,24})\s*:\s*")
 
 
 @dataclass(frozen=True)
@@ -96,7 +99,7 @@ def load_calibration(path: Path) -> tuple[Point, Point, Point]:
     drag_end = payload.get("drag_end") or []
     input_box = payload.get("input_box") or []
     if len(drag_start) != 2 or len(drag_end) != 2 or len(input_box) != 2:
-        raise ValueError(f"Invalid calibration format: {path}")
+        raise ValueError(f"좌표 파일 형식이 잘못되었습니다: {path}")
     return (
         Point(int(drag_start[0]), int(drag_start[1])),
         Point(int(drag_end[0]), int(drag_end[1])),
@@ -126,9 +129,9 @@ def capture_point(label: str) -> Point:
     try:
         import pyautogui  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("Calibration requires pyautogui.") from exc
+        raise RuntimeError("좌표 calibration에는 pyautogui가 필요합니다.") from exc
 
-    print(f"[calibrate] Move mouse to '{label}', then press SPACE. (q to cancel)")
+    print(f"[calibration] '{label}' 위치에 마우스를 두고 SPACE를 누르세요. (취소: q)")
     if os.name == "nt":
         import msvcrt
 
@@ -142,15 +145,15 @@ def capture_point(label: str) -> Point:
                     print()
                     return Point(x=int(x), y=int(y))
                 if key.lower() == "q":
-                    raise KeyboardInterrupt("Calibration cancelled by user.")
+                    raise KeyboardInterrupt("사용자가 calibration을 취소했습니다.")
             time.sleep(0.04)
 
     while True:
         x, y = pyautogui.position()
-        print(f"[calibrate] {label}: current={x},{y} press Enter to capture, q then Enter to cancel")
+        print(f"[calibration] {label}: 현재={x},{y} / 캡처=Enter / 취소=q")
         key = input().strip().lower()
         if key == "q":
-            raise KeyboardInterrupt("Calibration cancelled by user.")
+            raise KeyboardInterrupt("사용자가 calibration을 취소했습니다.")
         return Point(x=int(x), y=int(y))
 
 
@@ -179,7 +182,7 @@ def copy_chat_region(rect: Rect, drag_duration: float, copy_wait_sec: float) -> 
         import pyautogui  # type: ignore
         import pyperclip  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("Bridge UI mode requires pyautogui and pyperclip.") from exc
+        raise RuntimeError("bridge UI 모드에는 pyautogui, pyperclip이 필요합니다.") from exc
 
     def _copy() -> str:
         pyautogui.moveTo(rect.x1, rect.y1, duration=0.02)
@@ -199,7 +202,7 @@ def paste_and_send(text: str, input_point: Point, press_enter: bool) -> None:
         import pyautogui  # type: ignore
         import pyperclip  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("Bridge send mode requires pyautogui and pyperclip.") from exc
+        raise RuntimeError("전송 기능에는 pyautogui, pyperclip이 필요합니다.") from exc
 
     def _send() -> None:
         pyautogui.click(input_point.x, input_point.y)
@@ -216,9 +219,9 @@ def to_24h(ampm: str, hm: str) -> str:
     hour_str, minute_str = hm.split(":", 1)
     hour = int(hour_str)
     minute = int(minute_str)
-    if ampm == "오후" and hour < 12:
+    if ampm == "\uC624\uD6C4" and hour < 12:
         hour += 12
-    if ampm == "오전" and hour == 12:
+    if ampm == "\uC624\uC804" and hour == 12:
         hour = 0
     return f"{hour:02d}:{minute:02d}"
 
@@ -320,6 +323,17 @@ def render_user_turn(speaker: str, text: str, include_speaker_prefix: bool) -> s
         return f"{speaker}: {text}"
     return text
 
+def normalize_model_reply(text: str) -> str:
+    out = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    out = re.sub(r"\s*\n+\s*", " ", out)
+    out = re.sub(r"[ \t]{2,}", " ", out).strip()
+    for _ in range(3):
+        trimmed = LEADING_SPEAKER_RE.sub("", out, count=1).strip()
+        if trimmed == out:
+            break
+        out = trimmed
+    return out.strip()
+
 
 def parse_password_arg(password: str) -> str | None:
     value = (password or "").strip()
@@ -330,8 +344,8 @@ def main() -> None:
     configure_console_io()
     parser = argparse.ArgumentParser(
         description=(
-            "KakaoTalk desktop bridge: drag-copy chat region, detect new messages, "
-            "run SFT inference, and optionally auto-send replies."
+            "KakaoTalk desktop bridge: 채팅 영역 복사 -> 새 메시지 감지 -> "
+            "SFT 추론 -> 조건 충족 시 자동 전송"
         )
     )
     parser.add_argument("--config_sft", default="configs/sft.yaml")
@@ -342,9 +356,9 @@ def main() -> None:
     parser.add_argument("--password", default="")
 
     parser.add_argument("--poll_sec", type=float, default=5.0)
-    parser.add_argument("--drag_start", default="", help="x,y")
-    parser.add_argument("--drag_end", default="", help="x,y")
-    parser.add_argument("--input_xy", default="", help="x,y")
+    parser.add_argument("--drag_start", default="", help="x,y 좌표")
+    parser.add_argument("--drag_end", default="", help="x,y 좌표")
+    parser.add_argument("--input_xy", default="", help="x,y 좌표")
     parser.add_argument("--window_title", default="")
     parser.add_argument("--drag_duration", type=float, default=0.18)
     parser.add_argument("--copy_wait_sec", type=float, default=0.10)
@@ -353,11 +367,11 @@ def main() -> None:
     parser.add_argument("--save_calibration", default="")
     parser.add_argument("--calibrate", action="store_true")
 
-    parser.add_argument("--send", action="store_true", help="Actually paste+enter into Kakao input box.")
-    parser.add_argument("--no_enter", action="store_true", help="Paste only; do not press Enter.")
-    parser.add_argument("--bot_name", default="", help="Your Kakao nickname in that room.")
-    parser.add_argument("--ignore_speaker", action="append", default=[], help="Ignore these speakers completely.")
-    parser.add_argument("--include_speaker_prefix", action="store_true", default=True)
+    parser.add_argument("--send", action="store_true", help="카카오톡 입력창에 실제 붙여넣기+전송")
+    parser.add_argument("--no_enter", action="store_true", help="붙여넣기만 하고 Enter는 누르지 않음")
+    parser.add_argument("--bot_name", default="", help="해당 방에서 내 카카오톡 닉네임")
+    parser.add_argument("--ignore_speaker", action="append", default=[], help="해당 발화자는 완전히 무시")
+    parser.add_argument("--include_speaker_prefix", action="store_true", default=False)
     parser.add_argument("--no_speaker_prefix", dest="include_speaker_prefix", action="store_false")
 
     parser.add_argument("--history_limit", type=int, default=80)
@@ -368,6 +382,7 @@ def main() -> None:
     parser.add_argument("--max_sends_per_hour", type=int, default=40)
     parser.add_argument("--stop_file", default="")
     parser.add_argument("--print_snapshot_size", action="store_true")
+    parser.add_argument("--no_initial_reply", action="store_true")
     args = parser.parse_args()
 
     cfg = load_sft_config(config_path=args.config_sft, env_path=args.env_path)
@@ -382,7 +397,7 @@ def main() -> None:
 
     if args.load_calibration:
         drag_start, drag_end, input_point = load_calibration(Path(args.load_calibration))
-        print(f"[bridge] loaded calibration: {args.load_calibration}")
+        print(f"[bridge] 좌표 파일 로드: {args.load_calibration}")
 
     if args.drag_start:
         drag_start = parse_xy(args.drag_start)
@@ -395,7 +410,7 @@ def main() -> None:
         drag_start, drag_end, input_point = calibrate_points()
         if args.save_calibration:
             save_calibration(Path(args.save_calibration), drag_start=drag_start, drag_end=drag_end, input_point=input_point)
-            print(f"[bridge] saved calibration: {args.save_calibration}")
+            print(f"[bridge] 좌표 파일 저장: {args.save_calibration}")
 
     rect = normalize_rect(drag_start, drag_end)
     send_enabled = bool(args.send)
@@ -421,14 +436,14 @@ def main() -> None:
     stop_path = Path(args.stop_file).resolve() if args.stop_file else None
     print(f"[bridge] adapter={engine.adapter_dir}")
     print(f"[bridge] mode={engine.options.inference_mode}")
-    print(f"[bridge] poll={args.poll_sec}s send_enabled={send_enabled}")
+    print(f"[bridge] poll={args.poll_sec}s auto_send={send_enabled}")
     if stop_path is not None:
         print(f"[bridge] stop_file={stop_path}")
 
     while True:
         try:
             if stop_path is not None and stop_path.exists():
-                print("[bridge] stop file detected. exiting.")
+                print("[bridge] stop 파일 감지. 종료합니다.")
                 break
 
             if args.window_title:
@@ -445,7 +460,7 @@ def main() -> None:
                 continue
             last_snapshot_hash = snap_hash
             if args.print_snapshot_size:
-                print(f"[bridge] copied chars={len(snapshot)}")
+                print(f"[bridge] 복사 문자 수={len(snapshot)}")
 
             parsed = parse_kakao_snapshot(snapshot)
             if not parsed:
@@ -457,8 +472,22 @@ def main() -> None:
                     seen.add(msg.uid)
                 seed_count = max(0, int(args.seed_messages))
                 seed_slice = parsed[-seed_count:] if seed_count > 0 else []
-                for msg in seed_slice:
+
+                startup_reply_idx = -1
+                if not args.no_initial_reply:
+                    for idx in range(len(seed_slice) - 1, -1, -1):
+                        msg = seed_slice[idx]
+                        if msg.speaker in ignore_speakers:
+                            continue
+                        if args.bot_name and msg.speaker == args.bot_name:
+                            continue
+                        startup_reply_idx = idx
+                        break
+
+                for idx, msg in enumerate(seed_slice):
                     if msg.speaker in ignore_speakers:
+                        continue
+                    if idx == startup_reply_idx:
                         continue
                     role = "bot" if args.bot_name and msg.speaker == args.bot_name else "user"
                     if role == "bot":
@@ -475,7 +504,53 @@ def main() -> None:
                             )
                         )
                 initialized = True
-                print(f"[bridge] initialized. seeded_history={len(history)} seen={len(parsed)}")
+                print(f"[bridge] 초기화 완료. seed_history={len(history)} seen_messages={len(parsed)}")
+
+                if startup_reply_idx >= 0:
+                    msg = seed_slice[startup_reply_idx]
+                    user_turn = render_user_turn(
+                        speaker=msg.speaker,
+                        text=msg.text,
+                        include_speaker_prefix=bool(args.include_speaker_prefix),
+                    )
+                    should_reply, reply = engine.reply_or_skip(
+                        history=list(history),
+                        user_text=user_turn,
+                        force_reply=True,
+                    )
+                    history.append(("user", user_turn))
+                    print(f"[in ] {msg.text}")
+
+                    if should_reply:
+                        reply = normalize_model_reply(reply)
+                        if reply and reply != engine.options.group_no_reply_token:
+                            now = time.time()
+                            while send_timestamps and now - send_timestamps[0] >= 3600.0:
+                                send_timestamps.popleft()
+                            can_send = True
+                            if args.max_sends_per_hour > 0 and len(send_timestamps) >= int(args.max_sends_per_hour):
+                                can_send = False
+                                print("[스킵] 시간당 전송 한도 도달")
+                            if (
+                                can_send
+                                and args.min_send_interval_sec > 0
+                                and (now - last_send_ts) < float(args.min_send_interval_sec)
+                            ):
+                                can_send = False
+                                print("[스킵] 최소 전송 간격 제한")
+
+                            print(f"[out] {reply}")
+                            if can_send and send_enabled:
+                                if args.window_title:
+                                    focus_window(args.window_title)
+                                paste_and_send(reply, input_point=input_point, press_enter=(not args.no_enter))
+                                print("[전송] 완료")
+                                last_send_ts = now
+                                send_timestamps.append(now)
+                            elif can_send:
+                                print("[전송] dry-run 모드(--send로 실제 전송)")
+                            history.append(("bot", reply))
+
                 time.sleep(max(0.3, args.poll_sec))
                 continue
 
@@ -506,28 +581,27 @@ def main() -> None:
                 should_reply, reply = engine.reply_or_skip(history=list(history), user_text=user_turn)
                 history.append(("user", user_turn))
 
-                stamp = msg.day.isoformat() if msg.day else "unknown-day"
-                print(f"[in ] {stamp} {msg.ampm} {msg.hm} {msg.speaker}: {msg.text}")
+                print(f"[in ] {msg.text}")
 
                 if not should_reply:
                     print(f"[skip] {engine.options.group_no_reply_token}")
                     continue
-                reply = (reply or "").strip()
+                reply = normalize_model_reply(reply)
                 if not reply or reply == engine.options.group_no_reply_token:
                     print(f"[skip] {engine.options.group_no_reply_token}")
                     continue
                 if replies_this_cycle >= max(1, int(args.max_replies_per_cycle)):
-                    print("[skip] max_replies_per_cycle reached")
+                    print("[스킵] 이번 사이클 최대 응답 횟수 도달")
                     continue
 
                 now = time.time()
                 while send_timestamps and now - send_timestamps[0] >= 3600.0:
                     send_timestamps.popleft()
                 if args.max_sends_per_hour > 0 and len(send_timestamps) >= int(args.max_sends_per_hour):
-                    print("[skip] hourly send limit reached")
+                    print("[스킵] 시간당 전송 한도 도달")
                     continue
                 if args.min_send_interval_sec > 0 and (now - last_send_ts) < float(args.min_send_interval_sec):
-                    print("[skip] min send interval throttled")
+                    print("[스킵] 최소 전송 간격 제한")
                     continue
 
                 print(f"[out] {reply}")
@@ -535,23 +609,24 @@ def main() -> None:
                     if args.window_title:
                         focus_window(args.window_title)
                     paste_and_send(reply, input_point=input_point, press_enter=(not args.no_enter))
-                    print("[send] delivered")
+                    print("[전송] 완료")
                     last_send_ts = now
                     send_timestamps.append(now)
                 else:
-                    print("[send] dry-run (use --send to enable)")
+                    print("[전송] dry-run 모드(--send로 실제 전송)")
 
                 history.append(("bot", reply))
                 replies_this_cycle += 1
 
             time.sleep(max(0.3, args.poll_sec))
         except KeyboardInterrupt:
-            print("\n[bridge] stopped")
+            print("\n[bridge] 중지됨")
             break
         except Exception as exc:  # noqa: BLE001
-            print(f"[bridge][warn] {exc}")
+            print(f"[bridge][경고] {exc}")
             time.sleep(max(0.3, args.poll_sec))
 
 
 if __name__ == "__main__":
     main()
+
