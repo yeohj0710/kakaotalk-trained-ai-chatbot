@@ -166,6 +166,16 @@ generation:
   group_max_bot_turns_in_window: 2
   group_block_consecutive_bot: true
   group_no_reply_token: "<NO_REPLY>"
+  enable_confidence_fallback: true
+  confidence_threshold: 0.02
+  confidence_min_tokens: 6
+  confidence_fallback_texts:
+    - "...?"
+    - "?"
+    - "..?'"
+    - "???????"
+  confidence_fallback_target_rate: 0.10
+  confidence_fallback_rate_window: 200
 
 smoke:
   prompts:

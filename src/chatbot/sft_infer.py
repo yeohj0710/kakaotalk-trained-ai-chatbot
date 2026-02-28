@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from collections import Counter, deque
 import json
+import math
 import os
+import random
 import re
 import sys
 import time
@@ -307,6 +309,19 @@ class SFTInferOptions:
     group_max_bot_turns_in_window: int
     group_block_consecutive_bot: bool
     group_no_reply_token: str
+    enable_confidence_fallback: bool
+    confidence_threshold: float
+    confidence_min_tokens: int
+    confidence_fallback_texts: tuple[str, ...]
+    confidence_fallback_target_rate: float
+    confidence_fallback_rate_window: int
+
+
+@dataclass
+class GenerationCandidate:
+    text: str
+    avg_logprob: float
+    avg_prob: float
 
 
 class SFTInferenceEngine:
@@ -325,6 +340,7 @@ class SFTInferenceEngine:
         self.task_prompt = task_prompt
         self.options = options
         self.adapter_dir = adapter_dir
+        self._fallback_rate_history: deque[int] = deque(maxlen=max(20, self.options.confidence_fallback_rate_window))
 
     @classmethod
     def load(
@@ -425,6 +441,14 @@ class SFTInferenceEngine:
         configured_mode = normalize_mode(str(gen_cfg.get("inference_mode", "group")))
         if mode_override:
             configured_mode = normalize_mode(mode_override)
+
+        fallback_texts_cfg = gen_cfg.get("confidence_fallback_texts", ["...?", "?", "..?'", "???????"])
+        if not isinstance(fallback_texts_cfg, list):
+            fallback_texts_cfg = ["...?", "?", "..?'", "???????"]
+        fallback_texts = tuple(str(item) for item in fallback_texts_cfg if str(item).strip())
+        if not fallback_texts:
+            fallback_texts = ("...?",)
+
         options = SFTInferOptions(
             inference_mode=configured_mode,
             max_new_tokens=int(gen_cfg.get("max_new_tokens", 96)),
@@ -450,6 +474,12 @@ class SFTInferenceEngine:
             group_max_bot_turns_in_window=max(0, int(gen_cfg.get("group_max_bot_turns_in_window", 2))),
             group_block_consecutive_bot=bool(gen_cfg.get("group_block_consecutive_bot", True)),
             group_no_reply_token=str(gen_cfg.get("group_no_reply_token", "<NO_REPLY>")),
+            enable_confidence_fallback=bool(gen_cfg.get("enable_confidence_fallback", False)),
+            confidence_threshold=float(gen_cfg.get("confidence_threshold", 0.04)),
+            confidence_min_tokens=max(1, int(gen_cfg.get("confidence_min_tokens", 6))),
+            confidence_fallback_texts=fallback_texts,
+            confidence_fallback_target_rate=max(0.0, min(1.0, float(gen_cfg.get("confidence_fallback_target_rate", 0.0)))),
+            confidence_fallback_rate_window=max(20, int(gen_cfg.get("confidence_fallback_rate_window", 200))),
         )
         system_prompt = str(prompt_cfg.get("system", "")).strip()
         task_prompt = str(prompt_cfg.get("task", "")).strip()
@@ -504,10 +534,38 @@ class SFTInferenceEngine:
             "[ANSWER]\n"
         )
 
-    def _generate_once(self, prompt: str) -> str:
+    def _estimate_candidate_confidence(self, scores: list[Any], generated_ids: Any) -> tuple[float, float]:
+        steps = min(len(scores), int(generated_ids.shape[0]))
+        if steps < self.options.confidence_min_tokens:
+            return 0.0, 1.0
+
+        total_logprob = 0.0
+        used = 0
+        for idx in range(steps):
+            step_scores = scores[idx]
+            if step_scores is None:
+                continue
+            if hasattr(step_scores, "ndim") and step_scores.ndim > 1:
+                logits = step_scores[0]
+            else:
+                logits = step_scores
+            token_id = int(generated_ids[idx].item())
+            log_probs = torch.log_softmax(logits.float(), dim=-1)
+            total_logprob += float(log_probs[token_id].item())
+            used += 1
+
+        if used < self.options.confidence_min_tokens:
+            return 0.0, 1.0
+
+        avg_logprob = total_logprob / max(1, used)
+        avg_prob = max(0.0, min(1.0, math.exp(avg_logprob)))
+        return avg_logprob, avg_prob
+
+    def _generate_once(self, prompt: str) -> GenerationCandidate:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         if torch.cuda.is_available():
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
+        need_confidence = bool(self.options.enable_confidence_fallback)
         gen_kwargs: dict[str, Any] = {
             "max_new_tokens": self.options.max_new_tokens,
             "do_sample": self.options.do_sample,
@@ -521,14 +579,46 @@ class SFTInferenceEngine:
             gen_kwargs["top_k"] = self.options.top_k
         if self.options.no_repeat_ngram_size > 0:
             gen_kwargs["no_repeat_ngram_size"] = self.options.no_repeat_ngram_size
+        if need_confidence:
+            gen_kwargs["return_dict_in_generate"] = True
+            gen_kwargs["output_scores"] = True
+
         with torch.no_grad():
             output = self.model.generate(**inputs, **gen_kwargs)
         prompt_len = inputs["input_ids"].shape[1]
-        generated_ids = output[0][prompt_len:]
+
+        avg_logprob = 0.0
+        avg_prob = 1.0
+        if need_confidence and hasattr(output, "sequences"):
+            generated_ids = output.sequences[0][prompt_len:]
+            avg_logprob, avg_prob = self._estimate_candidate_confidence(list(output.scores or []), generated_ids)
+        else:
+            generated_ids = output[0][prompt_len:]
+
         raw = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
         cleaned = sanitize_text(raw, one_line=self.options.one_line, max_chars=self.options.max_chars)
         out = strip_generation_artifacts(cleaned)
-        return trim_mentions(out, max_mentions=self.options.max_mentions)
+        return GenerationCandidate(
+            text=trim_mentions(out, max_mentions=self.options.max_mentions),
+            avg_logprob=avg_logprob,
+            avg_prob=avg_prob,
+        )
+
+    def _allow_confidence_fallback_by_rate(self) -> bool:
+        target = float(self.options.confidence_fallback_target_rate)
+        if target <= 0.0:
+            return False
+
+        hist = self._fallback_rate_history
+        if not hist:
+            return random.random() < target
+
+        current_rate = sum(hist) / max(1, len(hist))
+        if current_rate < target:
+            return True
+        if current_rate > target:
+            return False
+        return random.random() < target
 
     def _score_candidate(self, candidate: str, history: list[tuple[str, str]]) -> tuple[int, str]:
         score = 100
@@ -552,15 +642,32 @@ class SFTInferenceEngine:
         total_trials = max(1, self.options.candidate_count + self.options.regen_attempts)
         best_score = -10_000
         best_text = ""
+        best_candidate: GenerationCandidate | None = None
         for _ in range(total_trials):
             candidate = self._generate_once(prompt)
-            score, normalized = self._score_candidate(candidate, history)
+            score, normalized = self._score_candidate(candidate.text, history)
             if score > best_score:
                 best_score = score
                 best_text = normalized
+                best_candidate = GenerationCandidate(
+                    text=normalized,
+                    avg_logprob=candidate.avg_logprob,
+                    avg_prob=candidate.avg_prob,
+                )
             if score >= 100:
                 break
-        return best_text or "..."
+        final_text = best_text or "..."
+        did_fallback = False
+        if (
+            self.options.enable_confidence_fallback
+            and best_candidate is not None
+            and best_candidate.avg_prob < self.options.confidence_threshold
+            and self._allow_confidence_fallback_by_rate()
+        ):
+            did_fallback = True
+            final_text = random.choice(self.options.confidence_fallback_texts)
+        self._fallback_rate_history.append(1 if did_fallback else 0)
+        return final_text
 
     def should_reply(self, history: list[tuple[str, str]], user_text: str) -> bool:
         _ = user_text
