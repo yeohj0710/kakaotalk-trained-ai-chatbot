@@ -274,7 +274,7 @@ def resolve_4bit_config(model_cfg: dict[str, Any], dtype: torch.dtype) -> Any | 
 
 def normalize_mode(raw: str) -> str:
     mode = (raw or "").strip().lower()
-    if mode in {"1to1", "1:1", "one_to_one", "one-on-one", "single"}:
+    if mode in {"1to1", "1:1", "one_to_one", "one_on_one", "one-on-one", "single"}:
         return "one_on_one"
     if mode in {"group", "room"}:
         return "group"
