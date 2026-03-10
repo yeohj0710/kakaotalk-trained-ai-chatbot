@@ -3,6 +3,12 @@
 This runbook is for day-to-day training and testing.
 It only covers commands in this repository.
 
+Current recommended production target:
+- run: `room_chat_qwen25_7b_instruct_pht_v1_refine`
+- inference config: `configs/sft.chat7b.pht.chat.yaml`
+
+If you are starting a new session and want the best known model, go to `docs/BEST_MODEL_CHAT7B.md` first.
+
 ## 1) Preflight
 ```bash
 cd /c/dev/kakaotalk-trained-ai-chatbot
@@ -16,97 +22,59 @@ cat .env
 You need at least:
 - `CHATBOT_PASSWORD=...`
 
-## 2) Dataset Build
+## 2) Best-Model Inference
+
+Current best one-on-one chat:
 ```bash
-python -m chatbot.sft_ops preprocess --config_sft configs/sft.yaml --env_path .env
+python -m chatbot.sft_ops chat --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
 ```
 
-Outputs:
-- `data/sft/train.jsonl`
-- `data/sft/val.jsonl`
-- `data/sft/cpt_train.jsonl`
-- `data/sft/cpt_val.jsonl`
-- `data/sft/stats.json`
-
-## 3) CPT Stage
-Start or resume CPT:
+Quick smoke:
 ```bash
-python -m chatbot.sft_cpt_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2_cpt
+python -m chatbot.sft_ops smoke --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
 ```
 
-Checkpoint path:
-- `checkpoints_lora/room_lora_qwen25_7b_group_v2_cpt/`
+## 3) Best-Model Training Reproduction
 
-## 4) SFT Stage
-First SFT start must point to CPT adapter:
+Build dataset:
 ```bash
-python -m chatbot.sft_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --init_adapter checkpoints_lora/room_lora_qwen25_7b_group_v2_cpt/adapter_best
+python -m chatbot.sft_ops preprocess --config_sft configs/sft.chat7b.pht.yaml --env_path .env
 ```
 
-Resume SFT:
+Base SFT:
 ```bash
-python -m chatbot.sft_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2
+python -m chatbot.sft_train --config_sft configs/sft.chat7b.pht.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1
 ```
 
-Notes:
-- Fresh SFT without `--init_adapter` is blocked by default.
-- Use `--allow_fresh_start` only when you intentionally want fresh LoRA.
-
-## 5) One-command Pipeline (Optional)
+Refine:
 ```bash
-python -m chatbot.sft_ops train --config_sft configs/sft.yaml --env_path .env
+python -m chatbot.sft_train --config_sft configs/sft.chat7b.pht.refine.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --init_adapter checkpoints_lora/room_chat_qwen25_7b_instruct_pht_v1/adapter_best
 ```
 
-Pipeline behavior:
-1. Runs CPT first.
-2. Requires CPT completion if enabled in config.
-3. Bootstraps SFT from CPT adapter.
-4. Aborts if bootstrap adapter is missing.
-
-## 6) Inference Test
-Chat test with explicit mode:
+One-command script:
 ```bash
-python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode one_on_one
+powershell.exe -ExecutionPolicy Bypass -File "./scripts/train_chat7b_pht.ps1"
 ```
 
-Group-mode test:
-```bash
-python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group
-```
-
-## 7) Latest Checkpoint Test
-Git Bash:
-```bash
-RUN=room_lora_qwen25_7b_group_v2
-CKPT=$(ls -d checkpoints_lora/$RUN/checkpoint-* 2>/dev/null | sort -V | tail -1)
-python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --adapter "$CKPT" --mode one_on_one
-```
-
-PowerShell:
-```powershell
-$RUN="room_lora_qwen25_7b_group_v2"
-$CKPT=(Get-ChildItem "checkpoints_lora/$RUN" -Directory -Filter "checkpoint-*" | Sort-Object {[int]($_.Name -replace 'checkpoint-','')} -Descending | Select-Object -First 1).FullName
-python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --adapter "$CKPT" --mode one_on_one
-```
-
-## 8) Stop and Resume
+## 4) Stop and Resume
 - Stop immediately: `Ctrl+C`
 - Graceful stop: create `STOP` in run directory
 - Resume: same command, same `run_name`
 
-## 9) Validation
+## 5) Legacy Pipeline
+
+Dataset build:
+```bash
+python -m chatbot.sft_ops preprocess --config_sft configs/sft.yaml --env_path .env
+```
+
+Pipeline train:
+```bash
+python -m chatbot.sft_ops train --config_sft configs/sft.yaml --env_path .env
+```
+
+## 6) Validation
 ```bash
 python -m compileall src/chatbot
-python -m chatbot.sft_ops smoke --config_sft configs/sft.yaml --env_path .env --mode one_on_one
-```
-
-## 10) Kakao Desktop Bridge (Optional)
-Calibrate points with mouse + SPACE:
-```bash
-python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --calibrate --save_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇"
-```
-
-Run with auto-send:
-```bash
-python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --load_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇" --send
+python -m chatbot.sft_ops smoke --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
 ```

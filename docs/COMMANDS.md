@@ -1,52 +1,39 @@
 # COMMANDS
 
-## Core
+## Current Best Model
+```bash
+python -m chatbot.sft_ops chat --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
+python -m chatbot.sft_ops smoke --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
+python -m chatbot.sft_ops reply "test" --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
+```
+
+## Current Best Model Training
+```bash
+python -m chatbot.sft_ops preprocess --config_sft configs/sft.chat7b.pht.yaml --env_path .env
+python -m chatbot.sft_train --config_sft configs/sft.chat7b.pht.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1
+python -m chatbot.sft_train --config_sft configs/sft.chat7b.pht.refine.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --init_adapter checkpoints_lora/room_chat_qwen25_7b_instruct_pht_v1/adapter_best
+```
+
+## Current Best Model Training Script
+```bash
+powershell.exe -ExecutionPolicy Bypass -File "./scripts/train_chat7b_pht.ps1"
+```
+
+## Core Legacy Pipeline
 ```bash
 python -m chatbot.sft_ops organize
 python -m chatbot.sft_ops preprocess --config_sft configs/sft.yaml --env_path .env
 python -m chatbot.sft_ops train --config_sft configs/sft.yaml --env_path .env
 ```
 
-## Stage-specific
+## Stage-specific Legacy Commands
 ```bash
 python -m chatbot.sft_cpt_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2_cpt
 python -m chatbot.sft_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --init_adapter checkpoints_lora/room_lora_qwen25_7b_group_v2_cpt/adapter_best
 python -m chatbot.sft_train --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2
 ```
 
-## Inference
-```bash
-python -m chatbot.sft_ops reply "test" --config_sft configs/sft.yaml --env_path .env --mode one_on_one
-python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --mode one_on_one
-python -m chatbot.sft_ops chat --config_sft configs/sft.yaml --env_path .env --mode group
-python -m chatbot.sft_ops smoke --config_sft configs/sft.yaml --env_path .env --mode one_on_one
-```
-
 ## API
 ```bash
-python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000 --config_sft configs/sft.yaml --env_path .env --mode group
-```
-
-## Kakao Desktop Bridge
-Calibrate 3 points (drag start, drag end, input box), then run in dry-run:
-```bash
-python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --calibrate --save_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇"
-```
-
-Enable real sending:
-```bash
-python -m chatbot.sft_ops bridge --config_sft configs/sft.yaml --env_path .env --run_name room_lora_qwen25_7b_group_v2 --mode group --load_calibration artifacts/kakao_bridge_points.json --bot_name "<내카톡닉네임>" --ignore_speaker "플레이봇" --send
-```
-
-## Checkpoint Shortcuts
-Git Bash latest checkpoint:
-```bash
-RUN=room_lora_qwen25_7b_group_v2
-CKPT=$(ls -d checkpoints_lora/$RUN/checkpoint-* 2>/dev/null | sort -V | tail -1)
-```
-
-PowerShell latest checkpoint:
-```powershell
-$RUN="room_lora_qwen25_7b_group_v2"
-$CKPT=(Get-ChildItem "checkpoints_lora/$RUN" -Directory -Filter "checkpoint-*" | Sort-Object {[int]($_.Name -replace 'checkpoint-','')} -Descending | Select-Object -First 1).FullName
+python -m chatbot.sft_ops serve --host 127.0.0.1 --port 8000 --config_sft configs/sft.chat7b.pht.chat.yaml --env_path .env --run_name room_chat_qwen25_7b_instruct_pht_v1_refine --mode one_on_one
 ```
