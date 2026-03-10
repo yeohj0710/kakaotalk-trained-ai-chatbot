@@ -1,0 +1,173 @@
+project:
+  run_name: room_chat_qwen25_7b_instruct_pht_v1_closer_refine
+  seed: 42
+
+paths:
+  raw_glob: data/raw/inbox/*.txt
+  output_dir: data/sft/chat7b_pht_closer_refine
+  train_jsonl: data/sft/chat7b_pht_closer_refine/train.jsonl
+  val_jsonl: data/sft/chat7b_pht_closer_refine/val.jsonl
+  cpt_train_jsonl: data/sft/chat7b_pht_closer_refine/cpt_train.jsonl
+  cpt_val_jsonl: data/sft/chat7b_pht_closer_refine/cpt_val.jsonl
+  preview_json: data/sft/chat7b_pht_closer_refine/preview.json
+  stats_json: data/sft/chat7b_pht_closer_refine/stats.json
+  checkpoints_root: checkpoints_lora
+  stop_file_name: STOP
+  status_json: checkpoints_lora/{run_name}/status.json
+
+data:
+  val_ratio: 0.02
+  include_system: false
+  shuffle_before_split: false
+  session_gap_minutes: 180
+  context_turns: 5
+  min_context_turns: 2
+  sample_stride: 1
+  merge_same_speaker: true
+  merge_gap_minutes: 2
+  max_merged_chars: 320
+  min_message_chars: 2
+  min_target_chars: 5
+  max_target_chars: 40
+  max_message_chars: 320
+  drop_low_signal: true
+  mask_urls: true
+  mask_numbers: false
+  drop_media_only: true
+  drop_summary_artifacts: true
+  summary_bullet_min_count: 1
+  drop_mention_messages: true
+  max_mentions_per_message: 0
+  strip_mentions_before_filter: false
+  max_examples_per_split: 0
+  training_mode: projected_dialogue
+  target_speakers:
+    - "박현탁"
+  project_user_names: true
+  min_other_speaker_turns: 1
+  require_last_context_from_other_speaker: true
+  require_last_context_reply_prompt: true
+  drop_target_reply_prompt: true
+  drop_target_multiline: true
+  drop_target_with_url: true
+  drop_target_filler_start: true
+
+pipeline:
+  enabled: true
+  run_cpt_first: false
+  bootstrap_sft_from_cpt: false
+  cpt_run_name_suffix: "_cpt"
+  skip_cpt_if_sft_has_checkpoint: true
+  require_cpt_complete_before_sft: false
+  fail_if_sft_bootstrap_missing: false
+  fail_if_existing_sft_run_is_fresh: false
+
+prompt:
+  system: |
+    You are a one-on-one Korean chat bot.
+    Your identity is a member of a KakaoTalk room, but in this chat you speak only to the user.
+    Reply to the user's latest message directly.
+    Start with the actual answer.
+    Keep it short, natural, and finish cleanly.
+    Do not ramble into a second idea unless it is necessary.
+  task: |
+    Read the recent dialogue between user and bot.
+    The last user turn is the main reply target.
+    Write exactly one short natural next reply for bot.
+    Prefer one sentence that ends cleanly.
+    Output only the reply itself.
+  response_one_line: true
+
+model:
+  base_model: Qwen/Qwen2.5-7B-Instruct
+  trust_remote_code: true
+  use_fast_tokenizer: true
+  local_files_only: false
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  torch_dtype: bfloat16
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  max_seq_len: 768
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  grad_accum_steps: 4
+  learning_rate: 0.000004
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  max_steps: 800
+  num_train_epochs: 1
+  eval_steps: 50
+  save_steps: 50
+  logging_steps: 20
+  save_total_limit: 30
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  tf32: true
+  dataloader_num_workers: 2
+  load_best_model_at_end: true
+  early_stopping_patience: 6
+  require_init_adapter_on_fresh_start: true
+
+generation:
+  inference_mode: one_on_one
+  max_new_tokens: 36
+  do_sample: true
+  temperature: 0.38
+  top_p: 0.68
+  top_k: 12
+  repetition_penalty: 1.16
+  no_repeat_ngram_size: 6
+  avoid_summary_artifacts: true
+  avoid_self_echo: true
+  avoid_repetitive_output: true
+  max_mentions: 0
+  max_history_turns: 6
+  max_bot_history_turns: 2
+  min_reply_chars: 5
+  candidate_count: 8
+  regen_attempts: 4
+  one_line: true
+  max_chars: 56
+  use_chat_template: true
+  group_min_user_turns_since_last_bot: 0
+  group_max_bot_turns_in_window: 0
+  group_block_consecutive_bot: false
+  group_no_reply_token: "<NO_REPLY>"
+  enable_confidence_fallback: false
+  confidence_threshold: 0.02
+  confidence_min_tokens: 6
+  confidence_fallback_texts:
+    - "...?"
+  confidence_fallback_target_rate: 0.0
+  confidence_fallback_rate_window: 200
+
+smoke:
+  prompts:
+    - "불참실분 있음?"
+    - "뭐 먹을지 정해야 돼"
+    - "그럼 지금 뭐하는 게 좋을까"
+
+security:
+  require_password: true
+  password_env: CHATBOT_PASSWORD

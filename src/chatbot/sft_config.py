@@ -63,6 +63,7 @@ DEFAULT_SFT_CONFIG: ConfigDict = {
         "drop_target_reply_prompt": False,
         "drop_target_multiline": False,
         "drop_target_with_url": False,
+        "drop_target_filler_start": False,
     },
     "cpt_data": {
         "window_messages": 64,

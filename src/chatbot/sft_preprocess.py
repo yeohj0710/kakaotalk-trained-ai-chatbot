@@ -31,6 +31,7 @@ REPLY_PROMPT_RE = re.compile(
     "(뭐|무슨|왜|어때|어떰|어디|언제|누가|누구|몇|어떻게|가능|괜찮|맞지|맞냐|되나|됨|돼|해도|할까|줄래|해줘|알려줘|말해줘|추천))",
     re.IGNORECASE,
 )
+FILLER_START_RE = re.compile(r"^(그냥|근데|아니|일단|약간|근데도|아무튼)\b")
 
 
 def one_line(text: str) -> str:
@@ -68,6 +69,13 @@ def looks_like_reply_prompt(text: str) -> bool:
     if not normalized:
         return False
     return bool(REPLY_PROMPT_RE.search(normalized))
+
+
+def starts_with_filler_phrase(text: str) -> bool:
+    normalized = one_line(text or "")
+    if not normalized:
+        return False
+    return bool(FILLER_START_RE.match(normalized))
 
 
 def build_prompt(
@@ -200,6 +208,7 @@ def main() -> None:
     drop_target_reply_prompt = bool(data_cfg.get("drop_target_reply_prompt", False))
     drop_target_multiline = bool(data_cfg.get("drop_target_multiline", False))
     drop_target_with_url = bool(data_cfg.get("drop_target_with_url", False))
+    drop_target_filler_start = bool(data_cfg.get("drop_target_filler_start", False))
     response_one_line = bool(prompt_cfg.get("response_one_line", True))
     if training_mode not in {"next_turn_all_speakers", "projected_dialogue"}:
         raise ValueError(f"Unsupported data.training_mode: {training_mode}")
@@ -348,6 +357,9 @@ def main() -> None:
                     continue
                 if drop_target_reply_prompt and looks_like_reply_prompt(response):
                     local_drop["target_reply_prompt"] += 1
+                    continue
+                if drop_target_filler_start and starts_with_filler_phrase(response):
+                    local_drop["target_filler_start"] += 1
                     continue
                 start_idx = max(0, target_idx - context_turns)
                 context = msgs[start_idx:target_idx]
