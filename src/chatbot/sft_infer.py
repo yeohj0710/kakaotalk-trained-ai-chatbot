@@ -199,6 +199,77 @@ def soften_repetitive_candidate(text: str) -> str:
     return out.strip()
 
 
+QUESTION_PROMPT_RE = re.compile(
+    r"(\?$|[?？]|"
+    r"(\uBB50|\uBB34\uC2A8|\uC65C|\uC5B4\uB54C|\uC5B4\uB5A8|\uC5B4\uB514|\uC5B8\uC81C|\uB204\uAC00|\uB204\uAD6C|\uBA87|\uC5B4\uB5BB\uAC8C|\uAC00\uB2A5|\uAD1C\uCC2E|\uB9DE\uC9C0|\uB9DE\uB0D0|\uB418\uB098|\uB428|\uB3FC|\uD574\uB3C4|\uD560\uAE4C|\uC904\uB798|\uD574\uC918|\uC54C\uB824\uC918|\uB9D0\uD574\uC918|\uCD94\uCC9C))",
+    re.IGNORECASE,
+)
+
+
+def looks_like_question_prompt(text: str) -> bool:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return False
+    return bool(QUESTION_PROMPT_RE.search(out))
+
+
+def split_nonempty_lines(text: str) -> list[str]:
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def is_fragmented_multiline_candidate(text: str) -> bool:
+    lines = split_nonempty_lines(text)
+    if len(lines) < 3:
+        return False
+    compact_lengths = [len(re.sub(r"\s+", "", line)) for line in lines]
+    short_lines = sum(1 for size in compact_lengths if size <= 12)
+    avg_len = sum(compact_lengths) / max(1, len(compact_lengths))
+    return short_lines >= 2 or avg_len <= 16
+
+
+def flatten_fragmented_multiline_candidate(text: str) -> str:
+    lines = split_nonempty_lines(text)
+    if len(lines) <= 1:
+        return sanitize_text(text, one_line=True, max_chars=0)
+    return re.sub(r"\s{2,}", " ", " ".join(lines)).strip()
+
+
+def is_listy_candidate(text: str) -> bool:
+    lines = split_nonempty_lines(text)
+    if len(lines) < 3:
+        return False
+    compact_lengths = [len(re.sub(r"\s+", "", line)) for line in lines]
+    short_lines = sum(1 for size in compact_lengths if size <= 8)
+    return short_lines >= 2
+
+
+def trim_to_two_sentences(text: str) -> str:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return ""
+    parts = [part.strip() for part in re.split(r"(?<=[.!?！？。])\s+", out) if part.strip()]
+    if len(parts) >= 2:
+        return " ".join(parts[:2]).strip()
+    if len(out) > 120:
+        return out[:120].rstrip()
+    return out
+
+
+def starts_with_filler_phrase(text: str) -> bool:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return False
+    fillers = (
+        "\uADF8\uB0E5",
+        "\uADFC\uB370",
+        "\uC544\uB2C8",
+        "\uC57D\uAC04",
+        "\uC77C\uB2E8",
+        "\uB6F0\uC5C4\uC5C6\uC774",
+    )
+    return any(out.startswith(prefix) for prefix in fillers)
+
+
 def resolve_torch_dtype(name: str) -> torch.dtype:
     normalized = str(name).strip().lower()
     if normalized in {"bf16", "bfloat16"}:
@@ -512,7 +583,10 @@ class SFTInferenceEngine:
     def _build_prompt(self, history: list[tuple[str, str]], new_user_input: str) -> str:
         tail = self._select_history(history)
         if self.options.use_chat_template and hasattr(self.tokenizer, "apply_chat_template"):
-            messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
+            system_content = self.system_prompt.strip()
+            if self.task_prompt.strip():
+                system_content = f"{system_content}\n\n{self.task_prompt.strip()}".strip()
+            messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
             for role, text in tail:
                 if role == "bot":
                     messages.append({"role": "assistant", "content": text})
@@ -620,7 +694,7 @@ class SFTInferenceEngine:
             return False
         return random.random() < target
 
-    def _score_candidate(self, candidate: str, history: list[tuple[str, str]]) -> tuple[int, str]:
+    def _score_candidate(self, candidate: str, history: list[tuple[str, str]], user_text: str) -> tuple[int, str]:
         score = 100
         out = candidate
         if len(out.replace(" ", "")) < self.options.min_reply_chars:
@@ -633,6 +707,24 @@ class SFTInferenceEngine:
         if self.options.avoid_repetitive_output and is_repetitive_candidate(out):
             score -= 30
             out = soften_repetitive_candidate(out)
+        if is_fragmented_multiline_candidate(out):
+            score -= 25
+            out = flatten_fragmented_multiline_candidate(out)
+        if is_listy_candidate(out):
+            score -= 20
+            out = flatten_fragmented_multiline_candidate(out)
+        if len(re.sub(r"\s+", "", out)) > 110:
+            score -= 10
+            out = trim_to_two_sentences(out)
+        if looks_like_question_prompt(user_text):
+            if starts_with_filler_phrase(out):
+                score -= 10
+            if is_fragmented_multiline_candidate(candidate):
+                score -= 15
+            if out.count("?") >= 2:
+                score -= 10
+            out = trim_to_two_sentences(out)
+        out = sanitize_text(out, one_line=self.options.one_line, max_chars=self.options.max_chars)
         if not out:
             score -= 100
         return score, out
@@ -645,7 +737,7 @@ class SFTInferenceEngine:
         best_candidate: GenerationCandidate | None = None
         for _ in range(total_trials):
             candidate = self._generate_once(prompt)
-            score, normalized = self._score_candidate(candidate.text, history)
+            score, normalized = self._score_candidate(candidate.text, history, user_text)
             if score > best_score:
                 best_score = score
                 best_text = normalized

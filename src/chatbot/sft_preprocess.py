@@ -26,6 +26,11 @@ from .sft_config import format_with_run_name, load_sft_config
 MENTION_RE = re.compile(r"@[A-Za-z0-9_.\-가-힣]+")
 SUMMARY_BULLET_RE = re.compile(r"(?m)^\s*[·•\-]\s+")
 SUMMARY_KEYWORD_RE = re.compile(r"(요약|정리|핵심|summary)", re.IGNORECASE)
+REPLY_PROMPT_RE = re.compile(
+    r"(\?$|[??]|"
+    "(뭐|무슨|왜|어때|어떰|어디|언제|누가|누구|몇|어떻게|가능|괜찮|맞지|맞냐|되나|됨|돼|해도|할까|줄래|해줘|알려줘|말해줘|추천))",
+    re.IGNORECASE,
+)
 
 
 def one_line(text: str) -> str:
@@ -58,6 +63,13 @@ def is_summary_artifact_message(text: str, bullet_min_count: int = 1) -> bool:
     return False
 
 
+def looks_like_reply_prompt(text: str) -> bool:
+    normalized = one_line(text or "")
+    if not normalized:
+        return False
+    return bool(REPLY_PROMPT_RE.search(normalized))
+
+
 def build_prompt(
     context: list[ChatMessage],
     system_prompt: str,
@@ -71,6 +83,56 @@ def build_prompt(
         f"[DIALOGUE]\n{context_text}\n\n"
         "[ANSWER]\n"
     )
+
+
+def build_projected_prompt(
+    context: list[ChatMessage],
+    system_prompt: str,
+    task_prompt: str,
+    bot_speakers: set[str],
+    project_user_names: bool,
+) -> str:
+    lines: list[str] = []
+    for msg in context:
+        text = one_line(msg.text)
+        if msg.speaker in bot_speakers:
+            lines.append(f"bot: {text}")
+            continue
+        if project_user_names:
+            lines.append(f"user: [{msg.speaker}] {text}")
+        else:
+            lines.append(f"user: {text}")
+    context_text = "\n".join(lines)
+    return (
+        f"[SYSTEM]\n{system_prompt.strip()}\n\n"
+        f"[TASK]\n{task_prompt.strip()}\n\n"
+        f"[DIALOGUE]\n{context_text}\n\n"
+        "[ANSWER]\n"
+    )
+
+
+def build_projected_messages(
+    context: list[ChatMessage],
+    system_prompt: str,
+    task_prompt: str,
+    bot_speakers: set[str],
+    project_user_names: bool,
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": f"{system_prompt.strip()}\n\n{task_prompt.strip()}".strip(),
+        }
+    ]
+    for msg in context:
+        text = one_line(msg.text)
+        if msg.speaker in bot_speakers:
+            messages.append({"role": "assistant", "content": text})
+        elif project_user_names:
+            messages.append({"role": "user", "content": f"[{msg.speaker}] {text}"})
+        else:
+            messages.append({"role": "user", "content": text})
+    return messages
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -117,6 +179,7 @@ def main() -> None:
     max_merged_chars = int(data_cfg.get("max_merged_chars", 320))
     min_message_chars = int(data_cfg.get("min_message_chars", 2))
     min_target_chars = int(data_cfg.get("min_target_chars", 8))
+    max_target_chars = int(data_cfg.get("max_target_chars", 0))
     max_message_chars = int(data_cfg.get("max_message_chars", 320))
     drop_low_signal = bool(data_cfg.get("drop_low_signal", True))
     mask_urls = bool(data_cfg.get("mask_urls", True))
@@ -128,7 +191,29 @@ def main() -> None:
     max_mentions_per_message = max(0, int(data_cfg.get("max_mentions_per_message", 0)))
     strip_mentions_before_filter = bool(data_cfg.get("strip_mentions_before_filter", False))
     max_examples_per_split = int(data_cfg.get("max_examples_per_split", 0))
+    training_mode = str(data_cfg.get("training_mode", "next_turn_all_speakers")).strip().lower()
+    target_speakers = {str(item).strip() for item in data_cfg.get("target_speakers", []) if str(item).strip()}
+    project_user_names = bool(data_cfg.get("project_user_names", False))
+    min_other_speaker_turns = max(0, int(data_cfg.get("min_other_speaker_turns", 0)))
+    require_last_context_from_other_speaker = bool(data_cfg.get("require_last_context_from_other_speaker", False))
+    require_last_context_reply_prompt = bool(data_cfg.get("require_last_context_reply_prompt", False))
+    drop_target_reply_prompt = bool(data_cfg.get("drop_target_reply_prompt", False))
+    drop_target_multiline = bool(data_cfg.get("drop_target_multiline", False))
+    drop_target_with_url = bool(data_cfg.get("drop_target_with_url", False))
     response_one_line = bool(prompt_cfg.get("response_one_line", True))
+    if training_mode not in {"next_turn_all_speakers", "projected_dialogue"}:
+        raise ValueError(f"Unsupported data.training_mode: {training_mode}")
+    if training_mode == "projected_dialogue" and not target_speakers:
+        print(
+            json.dumps(
+                {
+                    "event": "projected_dialogue_warning",
+                    "reason": "target_speakers_empty",
+                    "hint": "Set data.target_speakers (or CHATBOT_PERSONA_SPEAKERS) for a stable single-persona bot.",
+                },
+                ensure_ascii=False,
+            )
+        )
 
     cpt_cfg = dict(cfg.get("cpt_data", {}))
     cpt_window_messages = max(2, int(cpt_cfg.get("window_messages", 64)))
@@ -252,16 +337,60 @@ def main() -> None:
                 if compact_length(response) < min_target_chars:
                     local_drop["short_target"] += 1
                     continue
+                if max_target_chars > 0 and compact_length(response) > max_target_chars:
+                    local_drop["long_target"] += 1
+                    continue
+                if drop_target_multiline and "\n" in target.text:
+                    local_drop["multiline_target"] += 1
+                    continue
+                if drop_target_with_url and "<URL>" in response:
+                    local_drop["target_url"] += 1
+                    continue
+                if drop_target_reply_prompt and looks_like_reply_prompt(response):
+                    local_drop["target_reply_prompt"] += 1
+                    continue
                 start_idx = max(0, target_idx - context_turns)
                 context = msgs[start_idx:target_idx]
                 if len(context) < min_context_turns:
                     local_drop["short_context"] += 1
                     continue
-                prompt = build_prompt(context=context, system_prompt=system_prompt, task_prompt=task_prompt)
+                if training_mode == "projected_dialogue":
+                    if target_speakers and target.speaker not in target_speakers:
+                        local_drop["target_speaker_filtered"] += 1
+                        continue
+                    bot_speakers = target_speakers if target_speakers else {target.speaker}
+                    other_speaker_turns = sum(1 for item in context if item.speaker not in bot_speakers)
+                    if other_speaker_turns < min_other_speaker_turns:
+                        local_drop["other_speaker_context"] += 1
+                        continue
+                    if require_last_context_from_other_speaker and context[-1].speaker in bot_speakers:
+                        local_drop["last_context_is_bot"] += 1
+                        continue
+                    if require_last_context_reply_prompt and not looks_like_reply_prompt(context[-1].text):
+                        local_drop["last_context_not_reply_prompt"] += 1
+                        continue
+                    prompt = build_projected_prompt(
+                        context=context,
+                        system_prompt=system_prompt,
+                        task_prompt=task_prompt,
+                        bot_speakers=bot_speakers,
+                        project_user_names=project_user_names,
+                    )
+                    messages = build_projected_messages(
+                        context=context,
+                        system_prompt=system_prompt,
+                        task_prompt=task_prompt,
+                        bot_speakers=bot_speakers,
+                        project_user_names=project_user_names,
+                    )
+                else:
+                    prompt = build_prompt(context=context, system_prompt=system_prompt, task_prompt=task_prompt)
+                    messages = []
                 rows.append(
                     {
                         "prompt": prompt,
                         "response": response,
+                        "messages": messages,
                         "meta": {
                             "split": split_name,
                             "source_file": target.source_file,

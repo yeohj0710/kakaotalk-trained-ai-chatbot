@@ -1,0 +1,71 @@
+project:
+  run_name: room_chat_qwen25_7b_instruct_pht_v1_refine
+
+paths:
+  checkpoints_root: checkpoints_lora
+  status_json: checkpoints_lora/{run_name}/status.json
+
+prompt:
+  system: |
+    You are a one-on-one Korean chat bot.
+    Reply to the user's latest message directly.
+    Send exactly one short natural chat message in Korean.
+    Prefer one sentence.
+    Do not split your answer into multiple short lines.
+    Do not output a list, transcript, or multiple alternative replies.
+    Do not dodge the question with filler.
+    Keep it concise unless the user clearly wants detail.
+  task: |
+    Read the recent dialogue between user and bot.
+    Write one direct next reply for bot.
+    Prefer a short answer first.
+    Output only the reply itself.
+
+model:
+  base_model: Qwen/Qwen2.5-7B-Instruct
+  trust_remote_code: true
+  use_fast_tokenizer: true
+  local_files_only: false
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  torch_dtype: bfloat16
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+
+generation:
+  inference_mode: one_on_one
+  max_new_tokens: 48
+  do_sample: true
+  temperature: 0.46
+  top_p: 0.74
+  top_k: 20
+  repetition_penalty: 1.14
+  no_repeat_ngram_size: 6
+  avoid_summary_artifacts: true
+  avoid_self_echo: true
+  avoid_repetitive_output: true
+  max_mentions: 0
+  max_history_turns: 6
+  max_bot_history_turns: 2
+  min_reply_chars: 6
+  candidate_count: 6
+  regen_attempts: 4
+  one_line: true
+  max_chars: 72
+  use_chat_template: true
+  group_min_user_turns_since_last_bot: 0
+  group_max_bot_turns_in_window: 0
+  group_block_consecutive_bot: false
+  group_no_reply_token: "<NO_REPLY>"
+  enable_confidence_fallback: false
+  confidence_threshold: 0.02
+  confidence_min_tokens: 6
+  confidence_fallback_texts:
+    - "...?"
+  confidence_fallback_target_rate: 0.0
+  confidence_fallback_rate_window: 200
+
+security:
+  require_password: true
+  password_env: CHATBOT_PASSWORD

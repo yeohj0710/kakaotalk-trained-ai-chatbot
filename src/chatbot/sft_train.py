@@ -134,6 +134,7 @@ def one_line(text: str) -> str:
 class TokenizeConfig:
     max_seq_len: int
     one_line_response: bool
+    use_chat_template: bool
 
 
 def build_tokenize_fn(tokenizer: PreTrainedTokenizerBase, cfg: TokenizeConfig):
@@ -142,14 +143,22 @@ def build_tokenize_fn(tokenizer: PreTrainedTokenizerBase, cfg: TokenizeConfig):
         raise ValueError("Tokenizer must provide eos_token_id.")
 
     def _tokenize_row(row: dict[str, Any]) -> dict[str, Any]:
-        prompt = sanitize_line(str(row["prompt"]))
         response = str(row["response"])
         if cfg.one_line_response:
             response = one_line(response)
         else:
             response = sanitize_line(response)
-
-        prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
+        prompt_ids: list[int]
+        if cfg.use_chat_template and row.get("messages") and hasattr(tokenizer, "apply_chat_template"):
+            prompt_text = tokenizer.apply_chat_template(
+                row["messages"],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            prompt_ids = tokenizer(prompt_text, add_special_tokens=False).input_ids
+        else:
+            prompt = sanitize_line(str(row["prompt"]))
+            prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
         response_ids = tokenizer(response, add_special_tokens=False).input_ids + [eos_id]
 
         # Preserve response span first, trim prompt from the left if needed.
@@ -433,6 +442,7 @@ def main() -> None:
         cfg=TokenizeConfig(
             max_seq_len=int(train_cfg.get("max_seq_len", 1024)),
             one_line_response=bool(prompt_cfg.get("response_one_line", True)),
+            use_chat_template=bool(cfg.get("generation", {}).get("use_chat_template", False)),
         ),
     )
     train_tok = train_ds.map(tokenize_fn, remove_columns=train_ds.column_names, desc="Tokenizing train")
