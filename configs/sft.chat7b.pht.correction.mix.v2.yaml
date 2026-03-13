@@ -1,0 +1,112 @@
+project:
+  run_name: room_chat_qwen25_7b_instruct_pht_v1_correction_mix_v2
+  seed: 42
+
+paths:
+  train_jsonl: data/sft/chat7b_pht_correction_mix_v2/train.jsonl
+  val_jsonl: data/sft/chat7b_pht_correction_mix_v2/val.jsonl
+  preview_json: data/sft/chat7b_pht_correction_mix_v2/preview.json
+  checkpoints_root: checkpoints_lora
+  stop_file_name: STOP
+  status_json: checkpoints_lora/{run_name}/status.json
+
+prompt:
+  system: |
+    You are a one-on-one Korean chat bot.
+    Reply directly to the user's latest message.
+    Answer first, stay concise, and keep the reply natural.
+  task: |
+    Read the recent dialogue between user and bot.
+    Write exactly one natural next reply for bot.
+    Output only the reply itself.
+  response_one_line: true
+
+model:
+  base_model: Qwen/Qwen2.5-7B-Instruct
+  trust_remote_code: true
+  use_fast_tokenizer: true
+  local_files_only: false
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  torch_dtype: bfloat16
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  max_seq_len: 768
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  min_train_examples: 64
+  min_val_examples: 16
+  grad_accum_steps: 4
+  learning_rate: 0.000001
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  lr_scheduler_type: cosine
+  max_steps: 360
+  num_train_epochs: 1
+  eval_steps: 20
+  save_steps: 20
+  logging_steps: 10
+  save_total_limit: 24
+  max_grad_norm: 1.0
+  tf32: true
+  bf16: true
+  fp16: false
+  dataloader_num_workers: 2
+  load_best_model_at_end: true
+  early_stopping_patience: 8
+  require_init_adapter_on_fresh_start: true
+
+generation:
+  inference_mode: one_on_one
+  max_new_tokens: 48
+  do_sample: true
+  temperature: 0.44
+  top_p: 0.72
+  top_k: 18
+  repetition_penalty: 1.14
+  no_repeat_ngram_size: 6
+  avoid_summary_artifacts: true
+  avoid_self_echo: true
+  avoid_repetitive_output: true
+  max_mentions: 0
+  max_history_turns: 6
+  max_bot_history_turns: 2
+  min_reply_chars: 6
+  candidate_count: 6
+  regen_attempts: 4
+  one_line: true
+  max_chars: 72
+  use_chat_template: true
+  group_min_user_turns_since_last_bot: 0
+  group_max_bot_turns_in_window: 0
+  group_block_consecutive_bot: false
+  group_no_reply_token: "<NO_REPLY>"
+  enable_confidence_fallback: false
+  confidence_threshold: 0.02
+  confidence_min_tokens: 6
+  confidence_fallback_texts:
+    - "...?"
+  confidence_fallback_target_rate: 0.0
+  confidence_fallback_rate_window: 200
+
+security:
+  require_password: true
+  password_env: CHATBOT_PASSWORD

@@ -431,10 +431,16 @@ def main() -> None:
 
     train_ds = load_json_dataset(train_jsonl, "train")
     val_ds = load_json_dataset(val_jsonl, "val")
-    if len(train_ds) < 100:
-        raise RuntimeError("Train dataset is too small. Run preprocess with enough examples.")
-    if len(val_ds) < 20:
-        raise RuntimeError("Validation dataset is too small. Increase data or lower filters.")
+    min_train_examples = max(1, int(train_cfg.get("min_train_examples", 100)))
+    min_val_examples = max(1, int(train_cfg.get("min_val_examples", 20)))
+    if len(train_ds) < min_train_examples:
+        raise RuntimeError(
+            f"Train dataset is too small. Need at least {min_train_examples} examples, got {len(train_ds)}."
+        )
+    if len(val_ds) < min_val_examples:
+        raise RuntimeError(
+            f"Validation dataset is too small. Need at least {min_val_examples} examples, got {len(val_ds)}."
+        )
 
     model, tokenizer, model_meta = prepare_model_and_tokenizer(cfg, init_adapter_path=init_adapter_used)
     tokenize_fn = build_tokenize_fn(

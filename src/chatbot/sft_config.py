@@ -146,6 +146,8 @@ DEFAULT_SFT_CONFIG: ConfigDict = {
         "max_seq_len": 768,
         "per_device_train_batch_size": 1,
         "per_device_eval_batch_size": 1,
+        "min_train_examples": 100,
+        "min_val_examples": 20,
         "grad_accum_steps": 4,
         "learning_rate": 1.2e-4,
         "weight_decay": 0.01,

@@ -106,6 +106,61 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     return _run_module("chatbot.sft_smoke", module_args)
 
 
+def cmd_collect(args: argparse.Namespace) -> int:
+    module_args = [
+        "--config_sft",
+        args.config_sft,
+        "--env_path",
+        args.env_path,
+        "--input",
+        args.input,
+        "--output",
+        args.output,
+    ]
+    if args.adapter:
+        module_args.extend(["--adapter", args.adapter])
+    if args.run_name:
+        module_args.extend(["--run_name", args.run_name])
+    if args.mode:
+        module_args.extend(["--mode", args.mode])
+    if args.limit > 0:
+        module_args.extend(["--limit", str(args.limit)])
+    if args.chain_history:
+        module_args.append("--chain_history")
+    password = _resolve_password(args.config_sft, args.env_path, args.password)
+    if password:
+        module_args.extend(["--password", password])
+    return _run_module("chatbot.sft_collect", module_args)
+
+
+def cmd_auto_direct_dataset(args: argparse.Namespace) -> int:
+    module_args = [
+        "--input_train",
+        args.input_train,
+        "--input_val",
+        args.input_val,
+        "--train_output",
+        args.train_output,
+        "--val_output",
+        args.val_output,
+    ]
+    if args.preview_output:
+        module_args.extend(["--preview_output", args.preview_output])
+    if args.seed is not None:
+        module_args.extend(["--seed", str(args.seed)])
+    if args.min_chars is not None:
+        module_args.extend(["--min_chars", str(args.min_chars)])
+    if args.max_chars is not None:
+        module_args.extend(["--max_chars", str(args.max_chars)])
+    if args.train_limit > 0:
+        module_args.extend(["--train_limit", str(args.train_limit)])
+    if args.val_limit > 0:
+        module_args.extend(["--val_limit", str(args.val_limit)])
+    if args.require_overlap:
+        module_args.append("--require_overlap")
+    return _run_module("chatbot.sft_autobuild_direct_qa", module_args)
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     module_args = [
         "--host",
@@ -237,6 +292,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_smoke.add_argument("--mode", default="one_on_one")
     p_smoke.add_argument("--password", default="")
     p_smoke.set_defaults(func=cmd_smoke)
+
+    p_collect = sub.add_parser("collect")
+    p_collect.add_argument("--config_sft", default="configs/sft.yaml")
+    p_collect.add_argument("--env_path", default=".env")
+    p_collect.add_argument("--adapter", default="")
+    p_collect.add_argument("--run_name", default="")
+    p_collect.add_argument("--mode", default="one_on_one")
+    p_collect.add_argument("--password", default="")
+    p_collect.add_argument("--input", required=True)
+    p_collect.add_argument("--output", required=True)
+    p_collect.add_argument("--limit", type=int, default=0)
+    p_collect.add_argument("--chain_history", action="store_true")
+    p_collect.set_defaults(func=cmd_collect)
+
+    p_auto = sub.add_parser("auto_direct_dataset")
+    p_auto.add_argument("--input_train", required=True)
+    p_auto.add_argument("--input_val", required=True)
+    p_auto.add_argument("--train_output", required=True)
+    p_auto.add_argument("--val_output", required=True)
+    p_auto.add_argument("--preview_output", default="")
+    p_auto.add_argument("--seed", type=int, default=42)
+    p_auto.add_argument("--min_chars", type=int, default=4)
+    p_auto.add_argument("--max_chars", type=int, default=56)
+    p_auto.add_argument("--train_limit", type=int, default=0)
+    p_auto.add_argument("--val_limit", type=int, default=0)
+    p_auto.add_argument("--require_overlap", action="store_true")
+    p_auto.set_defaults(func=cmd_auto_direct_dataset)
 
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("--host", default="127.0.0.1")

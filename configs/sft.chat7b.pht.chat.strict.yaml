@@ -9,16 +9,15 @@ prompt:
   system: |
     You are a one-on-one Korean chat bot.
     Reply to the user's latest message directly.
-    Send exactly one short natural chat message in Korean.
-    Prefer one sentence.
-    Do not split your answer into multiple short lines.
-    Do not output a list, transcript, or multiple alternative replies.
-    Do not dodge the question with filler.
-    Keep it concise unless the user clearly wants detail.
+    Answer first in one short natural Korean message.
+    Do not invent new facts, names, plans, or times unless the user clearly asked for them.
+    Do not open a second topic after answering.
+    Do not ask a return question unless it is necessary.
+    If context is insufficient, say so briefly instead of bluffing.
   task: |
     Read the recent dialogue between user and bot.
     Write one direct next reply for bot.
-    Prefer a short answer first.
+    Prefer a short concrete answer first.
     Output only the reply itself.
 
 model:
@@ -35,12 +34,12 @@ model:
 
 generation:
   inference_mode: one_on_one
-  max_new_tokens: 48
+  max_new_tokens: 40
   do_sample: true
-  temperature: 0.4
-  top_p: 0.7
-  top_k: 18
-  repetition_penalty: 1.16
+  temperature: 0.32
+  top_p: 0.62
+  top_k: 14
+  repetition_penalty: 1.18
   no_repeat_ngram_size: 6
   avoid_summary_artifacts: true
   avoid_self_echo: true
@@ -48,11 +47,11 @@ generation:
   max_mentions: 0
   max_history_turns: 5
   max_bot_history_turns: 2
-  min_reply_chars: 6
-  candidate_count: 8
-  regen_attempts: 6
+  min_reply_chars: 4
+  candidate_count: 10
+  regen_attempts: 8
   one_line: true
-  max_chars: 64
+  max_chars: 56
   use_chat_template: true
   group_min_user_turns_since_last_bot: 0
   group_max_bot_turns_in_window: 0

@@ -8,7 +8,7 @@ Use this first in a new session.
 
 - Purpose: one-on-one Korean chat that behaves like a KakaoTalk room member, but replies directly to the user
 - Base model: `Qwen/Qwen2.5-7B-Instruct`
-- Persona target: `¹ÚÇöÅ¹`
+- Persona target: `ë°•í˜„íƒ`
 - Best run: `room_chat_qwen25_7b_instruct_pht_v1_refine`
 - Best adapter dir: `checkpoints_lora/room_chat_qwen25_7b_instruct_pht_v1_refine/adapter_best`
 - Best training metric: `3.303590774536133`
@@ -99,13 +99,13 @@ The winning chat model instead learns:
 
 This is implemented through:
 - `data.training_mode: projected_dialogue`
-- `data.target_speakers: ["¹ÚÇöÅ¹"]`
+- `data.target_speakers: ["ë°•í˜„íƒ"]`
 - `project_user_names: true`
 - `use_chat_template: true`
 
 ### 4.2 Persona choice
 
-`¹ÚÇöÅ¹` was selected because:
+`ë°•í˜„íƒ` was selected because:
 - enough message volume to train on
 - lower noise than the highest-volume room speakers
 - better fit for direct reply behavior than pure room-hype speakers
@@ -210,6 +210,24 @@ If you need to wire this into other features:
 - `projected_dialogue` was the major structural improvement.
 - `chat_template` alignment between training and inference is required.
 - If future work stalls, collect failed prompts and build a correction dataset instead of blindly extending refine.
+
+## 8.1 Correction Experiments After The Best Model
+
+The following correction runs were built and tested after `room_chat_qwen25_7b_instruct_pht_v1_refine`, but none of them replaced production:
+
+- `room_chat_qwen25_7b_instruct_pht_v1_correction_v1`
+  - type: correction-only refine
+  - result: rejected after qualitative review due to unstable outputs
+- `room_chat_qwen25_7b_instruct_pht_v1_correction_mix_v1`
+  - type: reviewed corrections + persona anchors
+  - result: safer than correction-only, but still worse than production on real prompt tests
+- `room_chat_qwen25_7b_instruct_pht_v1_correction_mix_v2`
+  - type: larger reviewed corrections + persona anchors
+  - result: still failed promotion
+
+Promotion rule:
+- do not promote correction models by correction-set `eval_loss` alone
+- require repeated qualitative wins on the same real prompt batch
 
 ## 9. Recommended Next-Step Directions
 

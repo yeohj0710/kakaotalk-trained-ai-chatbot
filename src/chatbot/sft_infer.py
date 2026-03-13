@@ -77,6 +77,8 @@ MENTION_RE = re.compile(r"@[A-Za-z0-9_.\-가-힣]+")
 SUMMARY_BULLET_RE = re.compile(r"(?m)^\s*[·•\-]\s+")
 SUMMARY_HINT_RE = re.compile(r"(요약|정리|핵심|summary)", re.IGNORECASE)
 COMPARE_TEXT_RE = re.compile(r"[^A-Za-z0-9가-힣]+")
+PROFANITY_RE = re.compile(r"(씨발|시발|씨바|병신|븅신|좆|좃|지랄|개새끼|씨발련|시발련|fuck|fucking|shit|bitch)", re.IGNORECASE)
+VAGUE_NONANSWER_RE = re.compile(r"(모르겠|기억나심|기억남|뭐임|뭔데|어쩌라고|그러게|글쎄|아무튼|기억 안)", re.IGNORECASE)
 
 
 def trim_mentions(text: str, max_mentions: int) -> str:
@@ -213,6 +215,20 @@ def looks_like_question_prompt(text: str) -> bool:
     return bool(QUESTION_PROMPT_RE.search(out))
 
 
+def contains_profanity(text: str) -> bool:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return False
+    return bool(PROFANITY_RE.search(out))
+
+
+def is_vague_nonanswer(text: str) -> bool:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return False
+    return bool(VAGUE_NONANSWER_RE.search(out))
+
+
 def split_nonempty_lines(text: str) -> list[str]:
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
@@ -253,6 +269,44 @@ def trim_to_two_sentences(text: str) -> str:
     if len(out) > 120:
         return out[:120].rstrip()
     return out
+
+
+def trim_after_restart_marker(text: str) -> str:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return ""
+    markers = (
+        " 근데 ",
+        " 그런데 ",
+        " 그래서 ",
+        " 그러니까 ",
+        " 아니면 ",
+        " 다만 ",
+    )
+    best = out
+    for marker in markers:
+        idx = out.find(marker)
+        if idx >= 12:
+            prefix = out[:idx].strip(" ,")
+            if len(prefix.replace(" ", "")) >= 8:
+                best = prefix
+                break
+    return best
+
+
+def has_restart_marker(text: str) -> bool:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return False
+    return any(marker in out for marker in (" 근데 ", " 그런데 ", " 그래서 ", " 그러니까 ", " 아니면 ", " 다만 "))
+
+
+def ends_with_dangling_tail(text: str) -> bool:
+    out = sanitize_text(text, one_line=True, max_chars=0)
+    if not out:
+        return False
+    tails = (" 근데", " 그래서", " 그러니까", " 아니면", " 다만", " 어", " 음", " 뭐")
+    return any(out.endswith(tail) for tail in tails)
 
 
 def starts_with_filler_phrase(text: str) -> bool:
@@ -699,6 +753,8 @@ class SFTInferenceEngine:
         out = candidate
         if len(out.replace(" ", "")) < self.options.min_reply_chars:
             score -= 40
+        if contains_profanity(out):
+            score -= 80
         if self.options.avoid_summary_artifacts and looks_like_summary_artifact(out):
             score -= 25
             out = soften_summary_artifact(out)
@@ -716,11 +772,20 @@ class SFTInferenceEngine:
         if len(re.sub(r"\s+", "", out)) > 110:
             score -= 10
             out = trim_to_two_sentences(out)
+        if ends_with_dangling_tail(out):
+            score -= 12
         if looks_like_question_prompt(user_text):
+            if is_vague_nonanswer(out):
+                score -= 18
             if starts_with_filler_phrase(out):
                 score -= 10
+            if has_restart_marker(out) and len(re.sub(r"\s+", "", out)) >= 24:
+                score -= 12
+                out = trim_after_restart_marker(out)
             if is_fragmented_multiline_candidate(candidate):
                 score -= 15
+            if out.endswith("?"):
+                score -= 12
             if out.count("?") >= 2:
                 score -= 10
             out = trim_to_two_sentences(out)

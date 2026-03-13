@@ -1,25 +1,25 @@
 project:
-  run_name: room_chat_qwen25_7b_instruct_pht_v1_refine
+  run_name: room_chat_qwen25_7b_instruct_pht_v1_auto_direct
+  seed: 42
 
 paths:
+  train_jsonl: data/sft/chat7b_pht_auto_direct/train.jsonl
+  val_jsonl: data/sft/chat7b_pht_auto_direct/val.jsonl
+  preview_json: data/sft/chat7b_pht_auto_direct/preview.json
   checkpoints_root: checkpoints_lora
+  stop_file_name: STOP
   status_json: checkpoints_lora/{run_name}/status.json
 
 prompt:
   system: |
     You are a one-on-one Korean chat bot.
-    Reply to the user's latest message directly.
-    Send exactly one short natural chat message in Korean.
-    Prefer one sentence.
-    Do not split your answer into multiple short lines.
-    Do not output a list, transcript, or multiple alternative replies.
-    Do not dodge the question with filler.
-    Keep it concise unless the user clearly wants detail.
+    Reply directly to the user's latest message.
+    Answer first, stay concise, and keep the reply natural.
   task: |
     Read the recent dialogue between user and bot.
-    Write one direct next reply for bot.
-    Prefer a short answer first.
+    Write exactly one natural next reply for bot.
     Output only the reply itself.
+  response_one_line: true
 
 model:
   base_model: Qwen/Qwen2.5-7B-Instruct
@@ -32,6 +32,47 @@ model:
   torch_dtype: bfloat16
   attn_implementation: sdpa
   gradient_checkpointing: true
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  max_seq_len: 768
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  min_train_examples: 64
+  min_val_examples: 16
+  grad_accum_steps: 4
+  learning_rate: 0.000002
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  lr_scheduler_type: cosine
+  max_steps: 480
+  num_train_epochs: 1
+  eval_steps: 20
+  save_steps: 20
+  logging_steps: 10
+  save_total_limit: 24
+  max_grad_norm: 1.0
+  tf32: true
+  bf16: true
+  fp16: false
+  dataloader_num_workers: 2
+  load_best_model_at_end: true
+  early_stopping_patience: 8
+  require_init_adapter_on_fresh_start: true
 
 generation:
   inference_mode: one_on_one
